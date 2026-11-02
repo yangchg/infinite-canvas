@@ -55,7 +55,10 @@ export function createNotifier(config, { fetchImpl = fetch, records = new Map(),
             try {
                 const token = await tokenFor(channel);
                 const label = { success: '成功', failure: '失败', canceled: '已取消' }[input.status];
-                const text = `画布生成${label}\n画布：${input.canvas}\n配置：${input.node}\n成功 ${input.succeeded} 项，失败 ${input.failed} 项\n耗时：${input.elapsedSeconds} 秒\n${input.status === 'failure' ? '请在画布中查看生成错误详情。\n' : ''}运行：${input.eventId}`;
+                const details = input.details || {};
+                const description = [['生成类型', details.kind], ['输出方式', details.output], ['模型', details.model], ['参数', details.parameters], ['引用素材', details.references]].filter(([, value]) => typeof value === 'string' && value.trim()).map(([name, value]) => `${name}：${value}`).join('\n');
+                const prompt = typeof details.prompt === 'string' && details.prompt.trim() ? `\n\n生成内容（实际提示词）：\n${details.prompt.trim()}` : '';
+                const text = `画布生成${label}\n画布：${input.canvas}\n配置：${input.node}${description ? `\n${description}` : ''}${prompt}\n\n成功 ${input.succeeded} 项，失败 ${input.failed} 项\n耗时：${input.elapsedSeconds} 秒\n${input.status === 'failure' ? '请在画布中查看生成错误详情。\n' : ''}运行：${input.eventId}`;
                 sending = true;
                 const data = await api('topapi/message/corpconversation/asyncsend_v2', token, {
                     agent_id: channel.agentId, userid_list: users.join(','), to_all_user: false,

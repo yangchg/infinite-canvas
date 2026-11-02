@@ -28,6 +28,7 @@ import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-pa
 import { CanvasDingTalkNodePanel } from "@/components/canvas/canvas-dingtalk-node-panel";
 import { useGenerationNotifications } from "./hooks/use-generation-notifications";
 import type { NotificationOutcome } from "@/services/api/dingtalk";
+import { generationDetails } from "@/lib/canvas/canvas-notifications";
 import { CanvasPipelineNodePanel } from "@/components/canvas/canvas-pipeline-node-panel";
 import { executePipeline, planPipeline } from "@/lib/canvas/canvas-pipeline";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -2353,13 +2354,15 @@ function InfiniteCanvasPage() {
         }
         const controller = startGenerationRequest(nodeId, nodeId, nodeId, pipelineController);
         startGenerationRequest(targetId, nodeId, nodeId, controller);
-        const notify = beginNotification(nodeId);
+        const details = generationDetails("image", config, target.title || targetId);
+        const notify = beginNotification(nodeId, details);
         let outcome: NotificationOutcome = { status: "failure", succeeded: 0, failed: getGenerationCount(config.count) };
         setRunningNodeId(nodeId);
         try {
             const context = await hydrateNodeGenerationContext(buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, source.metadata?.composerContent ?? source.metadata?.prompt ?? ""));
             controller.signal.throwIfAborted();
             const prompt = context.prompt.trim();
+            Object.assign(details, { prompt, references: `图片 ${context.referenceImages.length} 张、视频 ${context.referenceVideos.length} 个、音频 ${context.referenceAudios.length} 个` });
             const count = getGenerationCount(config.count);
             // Keep the old image intact until every requested result has been stored.
             const images = await Promise.all(Array.from({ length: count }, async (): Promise<CanvasNodeImage> => {
@@ -2470,7 +2473,8 @@ function InfiniteCanvasPage() {
             setRunningNodeId(nodeId);
             const overwriteExisting = effectiveConfig.nodeRegenerateBehavior === "overwrite";
             const runController = startGenerationRequest(nodeId, nodeId, nodeId, execution?.controller);
-            const notify = beginNotification(nodeId);
+            const details = generationDetails(mode, generationConfig);
+            const notify = beginNotification(nodeId, details);
             let outcome: NotificationOutcome = { status: "failure", succeeded: 0, failed: 1 };
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
@@ -2481,6 +2485,7 @@ function InfiniteCanvasPage() {
                     buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
                 );
                 const effectivePrompt = generationContext.prompt.trim();
+                Object.assign(details, { prompt: effectivePrompt, references: `图片 ${generationContext.referenceImages.length} 张、视频 ${generationContext.referenceVideos.length} 个、音频 ${generationContext.referenceAudios.length} 个` });
                 if (runController.signal.aborted) {
                     finishGenerationRequest(nodeId, runController);
                     setRunningNodeId(null);

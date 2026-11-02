@@ -18,14 +18,14 @@ function setup({ fail = false, count = 1, beforeReturn = () => {}, referenced = 
     const notices = [];
     let sequence = 0;
     const context = vm.createContext({
-        AbortController, Error, clearTimeout, setTimeout,
+        modelOptionName: (value) => value, AbortController, Error, clearTimeout, setTimeout,
         CanvasNodeType: { Pipeline: 'pipeline', Config: 'config', Image: 'image', Text: 'text', Video: 'video', Audio: 'audio', Group: 'group' },
         NODE_STATUS_SUCCESS: 'success',
         nodesRef: { current: nodes }, connectionsRef: { current: connections },
         generationRequestsRef: { current: new Map() },
         pipelineRunRef: { current: null },
         historyCommitTimerRef: { current: null }, historyRef: { current: { past: [], future: [] } }, lastHistoryRef: { current: null },
-        beginNotification: () => (outcome) => { context.notificationOutcome = outcome; },
+        beginNotification: (id, details) => (outcome) => { context.notificationOutcome = outcome; context.notificationDetails = { ...details }; },
         effectiveConfig: {}, useCallback: (fn) => fn, isAiConfigReady: () => true, openConfigDialog: () => {},
         buildGenerationConfig: () => ({ model: 'chosen-model', count: String(count), size: '1024x1024', quality: 'high' }),
         getGenerationCount: Number, getNodeDefinition: () => undefined,
@@ -36,7 +36,7 @@ function setup({ fail = false, count = 1, beforeReturn = () => {}, referenced = 
         setRunningNodeId: () => {}, setHistoryState: () => {},
         uploadImage: async (data) => ({ url: data, storageKey: `${data}-key`, width: 512, height: 256, bytes: 12, mimeType: 'image/png' }),
     });
-    for (const path of ['lib/canvas/canvas-resource-references.ts', 'components/canvas/canvas-node-generation.ts', 'lib/canvas/canvas-node-factory.ts', 'lib/canvas/canvas-node-size.ts', 'lib/canvas/canvas-pipeline.ts']) {
+    for (const path of ['lib/canvas/canvas-resource-references.ts', 'components/canvas/canvas-node-generation.ts', 'lib/canvas/canvas-node-factory.ts', 'lib/canvas/canvas-node-size.ts', 'lib/canvas/canvas-pipeline.ts', 'lib/canvas/canvas-notifications.ts']) {
         const source = readFileSync(new URL(path, src), 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '');
         vm.runInContext(stripTypeScriptTypes(source), context);
     }
@@ -246,4 +246,15 @@ test('replacement notification reports success, failure and cancellation correct
         await context.replace('config', 'output');
         assert.equal(context.notificationOutcome.status, status);
     }
+});
+
+test('replacement notification describes the actual assembled request and explicit output target', async () => {
+    const { context } = setup();
+    const expected = context.buildNodeGenerationContext('config', context.nodesRef.current, context.connectionsRef.current, context.nodesRef.current[0].metadata?.composerContent ?? context.nodesRef.current[0].metadata?.prompt ?? '').prompt.trim();
+    await context.replace('config', 'output');
+    assert.equal(context.notificationDetails.prompt, expected);
+    assert.equal(context.notificationDetails.model, 'chosen-model');
+    assert.match(context.notificationDetails.output, /替换指定图片/);
+    assert.match(context.notificationDetails.parameters, /1024x1024/);
+    assert.match(context.notificationDetails.references, /图片/);
 });

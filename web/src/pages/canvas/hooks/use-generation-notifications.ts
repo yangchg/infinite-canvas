@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { nanoid } from "nanoid";
-import { dingTalkApi, type DingTalkDelivery, type DingTalkRequest, type NotificationOutcome } from "@/services/api/dingtalk";
+import { dingTalkApi, type DingTalkDelivery, type DingTalkRequest, type GenerationDetails, type NotificationOutcome } from "@/services/api/dingtalk";
 import { notificationEnabled, notificationTargets } from "@/lib/canvas/canvas-notifications";
 import type { CanvasNodeData, CanvasConnection } from "@/types/canvas";
 
@@ -18,7 +18,7 @@ export function useGenerationNotifications(projectId: string, canvas: string, no
         try { update(await dingTalkApi<DingTalkDelivery>(check ? "result" : "send", check ? { eventId: request.eventId } : request)); }
         catch (error) { update({ state: "unknown", message: error instanceof Error ? error.message : "通知结果未知，请查询发送结果" }); }
     }, []);
-    const beginNotification = useCallback((sourceId: string) => {
+    const beginNotification = useCallback((sourceId: string, details: GenerationDetails) => {
         const targets = notificationTargets(sourceId, nodes.current, connections.current);
         const node = nodes.current.find((item) => item.id === sourceId)?.title || sourceId;
         const started = Date.now();
@@ -31,7 +31,7 @@ export function useGenerationNotifications(projectId: string, canvas: string, no
                 if (!notificationEnabled(target, result)) continue;
                 const channel = target.metadata?.notificationChannel || "";
                 const users = target.metadata?.notificationUsers || [];
-                const request = { ...result, eventId: nanoid(), channel, users, canvas, node, elapsedSeconds: Math.round((Date.now() - started) / 1000) };
+                const request = { ...result, details: { ...details }, eventId: nanoid(), channel, users, canvas, node, elapsedSeconds: Math.round((Date.now() - started) / 1000) };
                 if (!channel || !users.length) {
                     setDeliveries((previous) => ({ ...previous, [target.id]: { request, state: "failed", message: "未发送：请先选择通知应用和接收员工" } }));
                 } else void send(target.id, request);

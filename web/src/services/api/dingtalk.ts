@@ -1,6 +1,7 @@
+export type GenerationDetails = { kind: string; model: string; output: string; parameters: string; prompt?: string; references?: string };
 export type NotificationOutcome = { status: "success" | "failure" | "canceled"; succeeded: number; failed: number };
 export type DingTalkChannel = { id: string; name: string; users: { id: string; name: string }[] };
-export type DingTalkRequest = NotificationOutcome & { eventId: string; channel: string; users: string[]; canvas: string; node: string; elapsedSeconds: number };
+export type DingTalkRequest = NotificationOutcome & { eventId: string; channel: string; users: string[]; canvas: string; node: string; elapsedSeconds: number; details?: GenerationDetails };
 export type DingTalkDelivery = { state: "submitted" | "delivered" | "failed" | "unknown"; message: string; retryable?: boolean };
 
 export async function dingTalkApi<T>(path: string, body?: unknown): Promise<T> {

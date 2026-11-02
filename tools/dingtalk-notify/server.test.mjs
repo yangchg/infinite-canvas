@@ -7,6 +7,19 @@ const config = { allowedOrigins: ['http://localhost:3000'], channels: [{ id: 'ap
 const input = { eventId: 'run1', channel: 'app', users: ['u1'], canvas: 'Canvas', node: 'Config', status: 'success', succeeded: 2, failed: 0, elapsedSeconds: 3 };
 const response = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+test('notification includes generation instructions and settings without forwarding arbitrary configuration', async () => {
+    let message;
+    const notifier = createNotifier(config, { fetchImpl: async (url, options) => {
+        if (url.includes('accessToken')) return response({ accessToken: 'token', expireIn: 7200 });
+        message = JSON.parse(options.body).msg.text.content;
+        return response({ errcode: 0, task_id: 42 });
+    } });
+    const details = { kind: '图片', model: 'image-model', output: '替换指定图片：角色图', parameters: '尺寸 1024x1024 · 质量 高 · 数量 2', references: '图片 1 张、视频 0 个、音频 0 个', prompt: '美式卡通\n角色：河马\n生成四方向角色展示图', apiKey: 'must-not-forward' };
+    await notifier.send({ ...input, details, status: 'failure', succeeded: 1, failed: 1 });
+    for (const text of ['生成类型：图片', '替换指定图片：角色图', '模型：image-model', '质量 高', '图片 1 张', details.prompt, '成功 1 项，失败 1 项']) assert.ok(message.includes(text), text);
+    assert.equal(message.includes('must-not-forward'), false);
+});
+
 test('app credentials stay server-side; token caching and deduplication cover concurrent sends and restart', async () => {
     const calls = [];
     const records = new Map();
