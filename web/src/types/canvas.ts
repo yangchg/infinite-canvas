@@ -13,6 +13,7 @@ export enum CanvasNodeType {
     Image = "image",
     Text = "text",
     Config = "config",
+    Pipeline = "pipeline",
     Video = "video",
     Audio = "audio",
     Group = "group",
@@ -52,6 +53,7 @@ export type CanvasNodeMetadata = {
     errorDetails?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
+    replacementOutputId?: string;
     generationType?: CanvasImageGenerationType;
     model?: string;
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";

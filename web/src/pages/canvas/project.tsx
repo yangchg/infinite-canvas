@@ -25,6 +25,8 @@ import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
+import { CanvasPipelineNodePanel } from "@/components/canvas/canvas-pipeline-node-panel";
+import { executePipeline, planPipeline } from "@/lib/canvas/canvas-pipeline";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
@@ -283,6 +285,15 @@ function InfiniteCanvasPage() {
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
+    const pipelineRunRef = useRef<{ entryId: string; controller: AbortController; currentNodeId?: string } | null>(null);
+    const [pipelineState, setPipelineState] = useState<{ entryId: string; running: boolean; status: string } | null>(null);
+    useEffect(() => {
+        setPipelineState(null);
+        return () => {
+            pipelineRunRef.current?.controller.abort();
+            pipelineRunRef.current = null;
+        };
+    }, [projectId]);
     const videoPollIdsRef = useRef(new Set<string>());
 
     const createHistoryEntry = useCallback(
@@ -2323,7 +2334,9 @@ function InfiniteCanvasPage() {
         setContextMenu(null);
     }, []);
 
-    const handleReplaceOutput = useCallback(async (nodeId: string, targetId: string) => {
+    const handleReplaceOutput = useCallback(async (nodeId: string, targetId: string, pipelineController?: AbortController) => {
+        if (pipelineRunRef.current && !pipelineController) { message.info("请等待流水线完成或先停止流水线。"); return; }
+        if (pipelineController?.signal.aborted) return;
         const source = nodesRef.current.find((node) => node.id === nodeId);
         const target = nodesRef.current.find((node) => node.id === targetId);
         const isConnected = () => connectionsRef.current.some((edge) => edge.fromNodeId === nodeId && edge.toNodeId === targetId);
@@ -2334,7 +2347,7 @@ function InfiniteCanvasPage() {
             openConfigDialog(true);
             return;
         }
-        const controller = startGenerationRequest(nodeId, nodeId, nodeId);
+        const controller = startGenerationRequest(nodeId, nodeId, nodeId, pipelineController);
         startGenerationRequest(targetId, nodeId, nodeId, controller);
         setRunningNodeId(nodeId);
         try {
@@ -2389,8 +2402,10 @@ function InfiniteCanvasPage() {
             nodesRef.current = nextNodes;
             setNodes(nextNodes);
             setHistoryState({ canUndo: true, canRedo: false });
+            return true;
         } catch (error) {
             if (!controller.signal.aborted && !isGenerationCanceled(error)) message.error(error instanceof Error ? error.message : t("canvas.projectPage.generationFailed"));
+            if (pipelineController) throw error;
             controller.abort();
         } finally {
             finishGenerationRequest(targetId, controller);
@@ -2400,7 +2415,9 @@ function InfiniteCanvasPage() {
     }, [createHistoryEntry, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t]);
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, execution?: { controller: AbortController; onSuccess: () => void }) => {
+            if (pipelineRunRef.current && !execution) { message.info("请等待流水线完成或先停止流水线。"); return; }
+            if (execution?.controller.signal.aborted) return;
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
@@ -2443,7 +2460,7 @@ function InfiniteCanvasPage() {
 
             setRunningNodeId(nodeId);
             const overwriteExisting = effectiveConfig.nodeRegenerateBehavior === "overwrite";
-            const runController = startGenerationRequest(nodeId, nodeId, nodeId);
+            const runController = startGenerationRequest(nodeId, nodeId, nodeId, execution?.controller);
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
             const generationContext = await hydrateNodeGenerationContext(
@@ -2600,6 +2617,7 @@ function InfiniteCanvasPage() {
                     if (hasFailure) {
                         message.error(hasSuccess ? t("canvas.projectPage.partialFailed") : firstError || t("canvas.projectPage.generationFailed"));
                     }
+                    if (hasSuccess && !hasFailure) execution?.onSuccess();
                     setNodes((prev) =>
                         prev.map((node) =>
                             node.id === nodeId && isConfigNode
@@ -2837,12 +2855,72 @@ function InfiniteCanvasPage() {
         },
         [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
     );
+    const stopPipeline = useCallback(() => {
+        const run = pipelineRunRef.current;
+        if (!run) return;
+        run.controller.abort();
+        if (run.currentNodeId) stopGenerationByRunningId(run.currentNodeId);
+    }, [stopGenerationByRunningId]);
+
+    useEffect(() => {
+        const run = pipelineRunRef.current;
+        if (run && (!nodes.some((node) => node.id === run.entryId) || (run.currentNodeId && !nodes.some((node) => node.id === run.currentNodeId)))) stopPipeline();
+    }, [nodes, stopPipeline]);
+
+    const handleRunPipeline = useCallback(async (entryId: string) => {
+        if (pipelineRunRef.current || generationRequestsRef.current.size) {
+            message.info("请先等待当前生成完成。");
+            return;
+        }
+        const run = { entryId, controller: new AbortController(), currentNodeId: undefined as string | undefined };
+        pipelineRunRef.current = run;
+        try {
+            const steps = planPipeline(entryId, nodesRef.current, connectionsRef.current);
+            // Validate every model before starting any paid requests.
+            for (const step of steps) {
+                const config = buildGenerationConfig(effectiveConfig, nodesRef.current.find((node) => node.id === step.nodeId), "image");
+                if (!isAiConfigReady(config, config.model)) {
+                    openConfigDialog(true);
+                    throw new Error("请先配置流水线所有步骤的可用模型。");
+                }
+            }
+            const signature = JSON.stringify(steps);
+            await executePipeline(steps, run.controller.signal, async (step, index) => {
+                if (JSON.stringify(planPipeline(entryId, nodesRef.current, connectionsRef.current)) !== signature) throw new Error("流水线连线或输出目标已变化，请重新运行。");
+                run.currentNodeId = step.nodeId;
+                const node = nodesRef.current.find((item) => item.id === step.nodeId)!;
+                setPipelineState({ entryId, running: true, status: `正在执行 ${index + 1}/${steps.length}：${node.title}` });
+                if (step.targetId) return Boolean(await handleReplaceOutput(step.nodeId, step.targetId, run.controller));
+                let success = false;
+                await handleGenerateNode(step.nodeId, "image", node.metadata?.composerContent ?? node.metadata?.prompt ?? "", {
+                    controller: run.controller,
+                    onSuccess: () => { success = true; },
+                });
+                return success;
+            });
+            if (pipelineRunRef.current === run) setPipelineState({ entryId, running: false, status: `已完成 ${steps.length} 个步骤` });
+        } catch (error) {
+            const status = run.controller.signal.aborted ? "已停止，保留已完成的结果" : error instanceof Error ? error.message : "流水线执行失败";
+            if (pipelineRunRef.current === run) {
+                setPipelineState({ entryId, running: false, status });
+                if (!run.controller.signal.aborted) message.error(status);
+            }
+        } finally {
+            run.controller.abort();
+            if (pipelineRunRef.current === run) {
+                if (run.currentNodeId) stopGenerationByRunningId(run.currentNodeId);
+                pipelineRunRef.current = null;
+            }
+        }
+    }, [effectiveConfig, handleGenerateNode, handleReplaceOutput, isAiConfigReady, message, openConfigDialog, stopGenerationByRunningId]);
+
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
     }, [handleGenerateNode]);
 
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData, imageId?: string) => {
+            if (pipelineRunRef.current) { message.info("请等待流水线完成或先停止流水线。"); return; }
             if (hasResumableVideoTask(node)) {
                 await pollVideoNodeTask(node);
                 return;
@@ -3190,7 +3268,15 @@ function InfiniteCanvasPage() {
     );
 
     const renderNodeContentPanel = useCallback(
-        (contentNode: CanvasNodeData) => (
+        (contentNode: CanvasNodeData) => contentNode.type === CanvasNodeType.Pipeline ? (
+            <CanvasPipelineNodePanel
+                running={pipelineState?.entryId === contentNode.id && pipelineState.running}
+                disabled={Boolean(pipelineState?.running || runningNodeId)}
+                status={pipelineState?.entryId === contentNode.id ? pipelineState.status : ""}
+                onRun={() => void handleRunPipeline(contentNode.id)}
+                onStop={stopPipeline}
+            />
+        ) : (
             <CanvasConfigNodePanel
                 node={contentNode}
                 outputImages={nodes.filter((node) => node.type === CanvasNodeType.Image && node.metadata?.content && connections.some((edge) => edge.fromNodeId === contentNode.id && edge.toNodeId === node.id))}
@@ -3206,7 +3292,7 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, nodes, runningNodeId],
+        [configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, handleRunPipeline, nodes, pipelineState, runningNodeId, stopPipeline],
     );
 
     const hoverPreviewNode = hoverPreviewNodeId ? nodeById.get(hoverPreviewNodeId) || null : null;
