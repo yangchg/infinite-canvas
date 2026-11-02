@@ -193,6 +193,8 @@ docker compose up -d
 
 点击链接加入群聊【开源无限画布(2群)】：https://qm.qq.com/q/HRt2kUnYiG
 
+Windows 本地部署（含钉钉通知）：[部署说明](deploy/windows/README.md)。
+
 ## 开源协议
 
 本项目使用 [MIT License](LICENSE)。任何人都可以免费使用、复制、修改、分发、再授权和商业使用本项目，也可以用于闭源产品。

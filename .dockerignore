@@ -12,3 +12,6 @@ web/out
 *.log
 .env*
 !.env.example
+tools/dingtalk-notify/config.local.json
+tools/dingtalk-notify/data
+deploy/windows/provider-relay/logs
