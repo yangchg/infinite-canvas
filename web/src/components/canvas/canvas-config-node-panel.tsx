@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
 import { Button, Segmented } from "antd";
 import { useTranslation } from "react-i18next";
@@ -19,11 +19,14 @@ type CanvasConfigNodePanelProps = {
     inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
+    outputImages: CanvasNodeData[];
+    onReplaceOutput: (nodeId: string, targetId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, outputImages, onReplaceOutput, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+    const [replacementId, setReplacementId] = useState("");
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -34,6 +37,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
+    const selectedOutputId = mode === "image" && outputImages.some((image) => image.id === replacementId) ? replacementId : "";
 
     return (
         <div className="flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
@@ -111,29 +115,44 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 )}
             </div>
 
-            <Button
-                type="primary"
-                className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
-                danger={isRunning}
-                disabled={!isRunning && !canGenerate}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => (isRunning ? onStop(node.id) : onGenerate(node.id))}
-            >
-                <span className="inline-flex items-center gap-1.5">
-                    {isRunning ? (
-                        <>
-                            <LoaderCircle className="size-4 animate-spin" />
-                            <Square className="size-3.5 fill-current" />
-                            <span>{t("canvas.configNode.stop")}</span>
-                        </>
-                    ) : (
-                        <>
-                            <Play className="size-4" />
-                            <span>{t("canvas.configNode.generate")}</span>
-                        </>
-                    )}
-                </span>
-            </Button>
+            <div className="mt-auto flex min-w-0 items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
+                {mode === "image" && outputImages.length > 0 && (
+                    <select
+                        aria-label="输出方式：新增输出或替换指定输出图片"
+                        className="h-9 min-w-0 flex-1 cursor-pointer rounded px-1 py-1 text-xs"
+                        style={{ background: theme.node.fill, color: theme.node.text }}
+                        value={selectedOutputId}
+                        disabled={isRunning}
+                        onChange={(event) => setReplacementId(event.target.value)}
+                    >
+                        <option value="">新增输出</option>
+                        {outputImages.map((image, index) => <option key={image.id} value={image.id}>替换 {index + 1}. {image.title || "图片"} · {image.id.slice(-6)}</option>)}
+                    </select>
+                )}
+                <Button
+                    type="primary"
+                    className="!h-9 flex-1 !cursor-pointer !rounded-lg"
+                    danger={isRunning}
+                    disabled={!isRunning && !canGenerate}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={() => (isRunning ? onStop(node.id) : selectedOutputId ? onReplaceOutput(node.id, selectedOutputId) : onGenerate(node.id))}
+                >
+                    <span className="inline-flex items-center gap-1.5">
+                        {isRunning ? (
+                            <>
+                                <LoaderCircle className="size-4 animate-spin" />
+                                <Square className="size-3.5 fill-current" />
+                                <span>{t("canvas.configNode.stop")}</span>
+                            </>
+                        ) : (
+                            <>
+                                <Play className="size-4" />
+                                <span>{selectedOutputId ? "生成并替换" : t("canvas.configNode.generate")}</span>
+                            </>
+                        )}
+                    </span>
+                </Button>
+            </div>
         </div>
     );
 }

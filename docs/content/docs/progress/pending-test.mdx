@@ -5,6 +5,8 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+- 生成配置节点替换输出：图片模式下，底部输出方式默认为“新增输出”；选择明确的直接输出图片后点击“生成并替换”。验证多个输出时只替换所选节点，使用当前组装提示词、引用、模型和参数；多图结果保存在同一节点，全部成功后才替换。节点 ID、位置和上下游连线保留，尺寸按新图比例适配；失败、取消、目标被删除/断开/编辑时不覆盖原图。验证撤销/重做恢复图片及生成记录，节点数和连线数不增加，下游下次手动生成读取新图且不会自动收费生成。`node --test web/tests/replace-config-output.test.mjs` 使用模拟接口验证核心流程；浏览器交互与真实接口仍待手动确认。
+
 The current release needs manual verification in these areas:
 
 - Saved model selection: save a canvas node with a model, then remove its provider or remove that model while another video model remains the default. Generation, retry and pending-video recovery should keep the unavailable model selected and open configuration instead of sending a request to the default or first provider. Re-selecting a valid model should allow generation. Changing only the API key on the same provider should preserve the model; switching a config node from a valid image model to video should still use the video default.

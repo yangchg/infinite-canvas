@@ -2323,6 +2323,82 @@ function InfiniteCanvasPage() {
         setContextMenu(null);
     }, []);
 
+    const handleReplaceOutput = useCallback(async (nodeId: string, targetId: string) => {
+        const source = nodesRef.current.find((node) => node.id === nodeId);
+        const target = nodesRef.current.find((node) => node.id === targetId);
+        const isConnected = () => connectionsRef.current.some((edge) => edge.fromNodeId === nodeId && edge.toNodeId === targetId);
+        if (source?.type !== CanvasNodeType.Config || (source.metadata?.generationMode || "image") !== "image" || target?.type !== CanvasNodeType.Image || !target.metadata?.content || !isConnected()) return;
+        if (generationRequestsRef.current.has(nodeId) || generationRequestsRef.current.has(targetId)) return;
+        const config = buildGenerationConfig(effectiveConfig, source, "image");
+        if (!isAiConfigReady(config, config.model)) {
+            openConfigDialog(true);
+            return;
+        }
+        const controller = startGenerationRequest(nodeId, nodeId, nodeId);
+        startGenerationRequest(targetId, nodeId, nodeId, controller);
+        setRunningNodeId(nodeId);
+        try {
+            const context = await hydrateNodeGenerationContext(buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, source.metadata?.composerContent ?? source.metadata?.prompt ?? ""));
+            controller.signal.throwIfAborted();
+            const prompt = context.prompt.trim();
+            const count = getGenerationCount(config.count);
+            // Keep the old image intact until every requested result has been stored.
+            const images = await Promise.all(Array.from({ length: count }, async (): Promise<CanvasNodeImage> => {
+                const results = context.referenceImages.length
+                    ? await requestEdit({ ...config, count: "1" }, prompt, context.referenceImages, { signal: controller.signal })
+                    : await requestGeneration({ ...config, count: "1" }, prompt, { signal: controller.signal });
+                controller.signal.throwIfAborted();
+                const uploaded = await uploadImage(results[0].dataUrl, { signal: controller.signal });
+                return { id: nanoid(), status: NODE_STATUS_SUCCESS, content: uploaded.url, storageKey: uploaded.storageKey, naturalWidth: uploaded.width, naturalHeight: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
+            }));
+            controller.signal.throwIfAborted();
+            const currentTarget = nodesRef.current.find((node) => node.id === targetId);
+            // Do not overwrite edits, deleted/disconnected nodes, or a newer request.
+            if (!isConnected() || !nodesRef.current.some((node) => node.id === nodeId && node.type === CanvasNodeType.Config) || currentTarget?.type !== CanvasNodeType.Image || currentTarget.metadata !== target.metadata || generationRequestsRef.current.get(targetId)?.controller !== controller) {
+                message.info("输出图片已变化，本次结果未替换原图。");
+                return;
+            }
+            const primary = images[0];
+            const before = createHistoryEntry();
+            const nextNodes = before.nodes.map<CanvasNodeData>((node) => node.id !== targetId ? node : {
+                ...node,
+                ...fitNodeSize(primary.naturalWidth, primary.naturalHeight, node.width, node.height),
+                metadata: {
+                    ...node.metadata,
+                    ...buildImageGenerationMetadata(context.referenceImages.length ? "edit" : "generation", config, count, context.referenceImages),
+                    background: config.background,
+                    prompt,
+                    content: primary.content,
+                    storageKey: primary.storageKey,
+                    naturalWidth: primary.naturalWidth,
+                    naturalHeight: primary.naturalHeight,
+                    bytes: primary.bytes,
+                    mimeType: primary.mimeType,
+                    images,
+                    primaryImageId: primary.id,
+                    status: NODE_STATUS_SUCCESS,
+                    errorDetails: undefined,
+                },
+            });
+            // Commit one undo step immediately, including when generation finishes quickly.
+            if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
+            historyCommitTimerRef.current = null;
+            historyRef.current.past = [...historyRef.current.past.slice(-49), before];
+            historyRef.current.future = [];
+            lastHistoryRef.current = { ...before, nodes: nextNodes };
+            nodesRef.current = nextNodes;
+            setNodes(nextNodes);
+            setHistoryState({ canUndo: true, canRedo: false });
+        } catch (error) {
+            if (!controller.signal.aborted && !isGenerationCanceled(error)) message.error(error instanceof Error ? error.message : t("canvas.projectPage.generationFailed"));
+            controller.abort();
+        } finally {
+            finishGenerationRequest(targetId, controller);
+            finishGenerationRequest(nodeId, controller);
+            setRunningNodeId((current) => current === nodeId ? null : current);
+        }
+    }, [createHistoryEntry, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t]);
+
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
@@ -3117,6 +3193,8 @@ function InfiniteCanvasPage() {
         (contentNode: CanvasNodeData) => (
             <CanvasConfigNodePanel
                 node={contentNode}
+                outputImages={nodes.filter((node) => node.type === CanvasNodeType.Image && node.metadata?.content && connections.some((edge) => edge.fromNodeId === contentNode.id && edge.toNodeId === node.id))}
+                onReplaceOutput={handleReplaceOutput}
                 isRunning={runningNodeId === contentNode.id}
                 inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
                 onConfigChange={handleConfigNodeChange}
@@ -3128,7 +3206,7 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+        [configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, nodes, runningNodeId],
     );
 
     const hoverPreviewNode = hoverPreviewNodeId ? nodeById.get(hoverPreviewNodeId) || null : null;
