@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'config.local.json'))) { throw '请先将 config.example.json 复制为 config.local.json 并填写应用凭据和员工 userId。' }
+if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'config.local.json'))) { throw 'Create config.local.json from config.example.json and fill in app credentials and employee userIds first.' }
 try {
     $notifyHealth = Invoke-RestMethod -Uri 'http://127.0.0.1:17374/health'
     if ($notifyHealth.service -eq 'canvas-dingtalk-notify') { return }

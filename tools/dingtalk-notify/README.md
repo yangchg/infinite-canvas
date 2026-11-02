@@ -2,12 +2,14 @@
 
 通知节点直接连接生成配置，监听该配置的执行结束；不放入流水线执行步骤。拖动通知节点左侧连接点到配置节点即可关联。手动生成、生成并替换、流水线触发均适用；多图生成汇总一次，部分失败记为失败；取消默认不通知，可勾选。通知发送独立于生成，不影响后续流水线和撤销，不重试收费生成。
 
+完整 Windows 部署、启动和重启入口统一位于 [`deploy/windows`](../../deploy/windows/README.md)。
+
 ## 配置与启动
 
 1. 将此目录的 `config.example.json` 复制为 `config.local.json`。填写已有企业内部应用的 AppKey、AppSecret、数字 AgentId，以及允许接收通知的员工 userId 和显示名称。userId 是该企业下员工的标识，不是手机号、unionId 或昵称。接收员工必须在应用可用范围内，应用应具有发送工作通知权限。不要将真实凭据写进示例或提交到 Git；`config.local.json` 已忽略。
 2. 配置 `allowedOrigins` 为实际画布地址。前端只读取应用名称和允许选择的员工，不读取密钥。服务仅绑定本机回环地址，通知通道通过现有 Nginx 同源代理访问。此方案沿用本地画布的访问边界，没有新增用户登录系统；能访问该画布服务的人可向白名单员工发送通知。
-3. Windows 安装 Node.js 后运行 `tools/dingtalk-notify/Start-Notify.ps1`。它启动独立本地服务 `127.0.0.1:17374`。修改配置后需要重启这个服务。可在本地 `Start-Canvas.ps1` 中加入对该脚本的调用以随画布启动。
-4. 将 `nginx-location.conf` 中的 location 加入 `D:\Canvas\nginx.local.conf` 的 server 内，检查配置并热加载。前端新节点还需按现有流程构建部署。
+3. Windows 安装 Node.js 后运行 `tools/dingtalk-notify/Start-Notify.ps1`。它启动独立本地服务 `127.0.0.1:17374`。修改配置后需要重启这个服务，再刷新画布页面加载最新应用和员工列表。仓库内 `deploy/windows/Start-Canvas.ps1` 已集成启动。
+4. 使用仓库内 `deploy/windows/Deploy.cmd` 部署，配套 Nginx 已包含通知路由。手动部署时可参考 `nginx-location.conf`。
 5. 新建“钉钉工作通知”，关联指定生成配置，选择应用、接收员工和成功/失败开关。每次执行使用开始时的通知设置；运行中新增连线不会追发通知。
 
 服务尚未配置时，通知节点明确提示不可用，原生成行为不受影响。不需要外网回调地址，仅需本机能访问钉钉 HTTPS 接口。应用凭据不能放在画布节点、导出文件或前端环境变量中。

@@ -11,12 +11,11 @@ export function CanvasDingTalkNodePanel({ node, sources, status, onChange, onChe
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [channels, setChannels] = useState<DingTalkChannel[]>([]);
     const [error, setError] = useState("");
-    const [reload, setReload] = useState(0);
     useEffect(() => {
         let active = true;
         dingTalkApi<DingTalkChannel[]>("channels").then((value) => { if (active) { setChannels(value); setError(""); } }, (reason) => { if (active) setError(reason.message); });
         return () => { active = false; };
-    }, [reload]);
+    }, []);
     const metadata = node.metadata || {};
     const channel = channels.find((item) => item.id === metadata.notificationChannel);
     return <div className="flex h-full flex-col gap-2 px-3 pb-3 pt-7 text-xs" style={{ color: theme.node.text }}>
@@ -33,7 +32,7 @@ export function CanvasDingTalkNodePanel({ node, sources, status, onChange, onChe
             <div className="flex gap-3">{([ ["notifySuccess", "成功"], ["notifyFailure", "失败"], ["notifyCanceled", "取消"] ] as const).map(([key, label]) => <label key={key} className="flex gap-1"><input type="checkbox" checked={key === "notifyCanceled" ? metadata[key] === true : metadata[key] !== false} onChange={(event) => onChange(node.id, { [key]: event.target.checked })} />{label}</label>)}</div>
             {error && <span>{error}</span>}
             <span>{status || "等待关联配置执行完成"}</span>
-            <div className="flex flex-wrap gap-3"><button type="button" onClick={() => setReload((value) => value + 1)}>刷新应用配置</button>{onCheck && <button type="button" onClick={onCheck}>查询发送结果</button>}{onRetry && <button type="button" onClick={onRetry}>仅重发通知</button>}</div>
+            {(onCheck || onRetry) && <div className="flex flex-wrap gap-3">{onCheck && <button type="button" onClick={onCheck}>查询发送结果</button>}{onRetry && <button type="button" onClick={onRetry}>仅重发通知</button>}</div>}
         </div>
     </div>;
 }
