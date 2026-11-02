@@ -25,6 +25,7 @@ function setup({ fail = false, count = 1, beforeReturn = () => {}, referenced = 
         generationRequestsRef: { current: new Map() },
         pipelineRunRef: { current: null },
         historyCommitTimerRef: { current: null }, historyRef: { current: { past: [], future: [] } }, lastHistoryRef: { current: null },
+        beginNotification: () => (outcome) => { context.notificationOutcome = outcome; },
         effectiveConfig: {}, useCallback: (fn) => fn, isAiConfigReady: () => true, openConfigDialog: () => {},
         buildGenerationConfig: () => ({ model: 'chosen-model', count: String(count), size: '1024x1024', quality: 'high' }),
         getGenerationCount: Number, getNodeDefinition: () => undefined,
@@ -200,4 +201,49 @@ test('actual page runner checks all models before the first paid request', async
     assert.equal(calls.length, 0);
     assert.equal(context.downstreamInput, undefined);
     assert.match(context.pipelineState.status, /所有步骤的可用模型/);
+});
+
+function attachNormalGeneration(context) {
+    Object.assign(context, {
+        NODE_STATUS_LOADING: 'loading', NODE_STATUS_ERROR: 'error', NODE_STATUS_IDLE: 'idle',
+        NODE_DEFAULT_SIZE: { config: { width: 340, height: 240 }, image: { width: 340, height: 240 }, text: { width: 340, height: 240 } },
+        completeVideoNodeTask: () => {}, setSelectedNodeIds: () => {}, setSelectedConnectionId: () => {}, setDialogNodeId: () => {},
+        isVideoTaskFailed: () => false,
+        setConnections: (fn) => { context.connectionsRef.current = fn(context.connectionsRef.current); },
+    });
+    const normal = page.slice(page.indexOf('    const handleGenerateNode ='), page.indexOf('    const stopPipeline ='));
+    vm.runInContext(stripTypeScriptTypes(normal) + '\nglobalThis.generate = handleGenerateNode;', context);
+}
+
+test('normal image generation notifies once after the entire batch, including partial failure', async () => {
+    for (const fail of [false, true]) {
+        const { context } = setup({ count: 2 });
+        attachNormalGeneration(context);
+        let sent = 0;
+        context.beginNotification = () => (result) => { sent++; context.notificationOutcome = result; };
+        let calls = 0;
+        context.requestGeneration = async () => { if (++calls === 2 && fail) throw new Error('failed'); return [{ dataUrl: 'generated' }]; };
+        await context.generate('config', 'image', 'prompt');
+        assert.equal(sent, 1);
+        assert.equal(context.notificationOutcome.status, fail ? 'failure' : 'success');
+        assert.equal(context.notificationOutcome.succeeded, fail ? 1 : 2);
+        assert.equal(context.notificationOutcome.failed, fail ? 1 : 0);
+    }
+});
+
+test('reference hydration failure notifies and releases generation lock', async () => {
+    const { context } = setup();
+    attachNormalGeneration(context);
+    context.hydrateNodeGenerationContext = async () => { throw new Error('missing reference'); };
+    await context.generate('config', 'image', 'prompt');
+    assert.equal(context.notificationOutcome.status, 'failure');
+    assert.equal(context.generationRequestsRef.current.size, 0);
+});
+
+test('replacement notification reports success, failure and cancellation correctly', async () => {
+    for (const status of ['success', 'failure', 'canceled']) {
+        const { context } = setup({ fail: status === 'failure', beforeReturn: (state) => { if (status === 'canceled') state.generationRequestsRef.current.get('config').controller.abort(); } });
+        await context.replace('config', 'output');
+        assert.equal(context.notificationOutcome.status, status);
+    }
 });

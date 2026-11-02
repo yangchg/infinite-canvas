@@ -1,4 +1,4 @@
-import { FileText, Group, Image as ImageIcon, Music2, Settings2, Video, Workflow } from "lucide-react";
+import { Bell, FileText, Group, Image as ImageIcon, Music2, Settings2, Video, Workflow } from "lucide-react";
 
 import i18n from "@/i18n";
 
@@ -20,6 +20,7 @@ function builtinResource(node: CanvasNodeData): CanvasNodeResource | null {
 const iconClass = "size-4";
 
 const BUILTIN_DEFINITIONS: CanvasNodeDefinition[] = [
+    { type: CanvasNodeType.DingTalk, title: "钉钉工作通知", icon: <Bell className={iconClass} />, hidePanel: true, hasSourceHandle: false },
     { type: CanvasNodeType.Pipeline, title: "流水线", icon: <Workflow className={iconClass} />, hidePanel: true },
     { type: CanvasNodeType.Text, title: i18n.t("assets.kinds.text"), icon: <FileText className={iconClass} />, minimapColor: undefined, resource: builtinResource },
     { type: CanvasNodeType.Image, title: i18n.t("assets.kinds.image"), icon: <ImageIcon className={iconClass} />, minimapColor: "#10b981", keepAspectRatio: (node: CanvasNodeData) => !node.metadata?.freeResize, resource: builtinResource },

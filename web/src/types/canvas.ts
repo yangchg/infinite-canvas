@@ -14,6 +14,7 @@ export enum CanvasNodeType {
     Text = "text",
     Config = "config",
     Pipeline = "pipeline",
+    DingTalk = "dingtalk",
     Video = "video",
     Audio = "audio",
     Group = "group",
@@ -54,6 +55,11 @@ export type CanvasNodeMetadata = {
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     replacementOutputId?: string;
+    notificationChannel?: string;
+    notificationUsers?: string[];
+    notifySuccess?: boolean;
+    notifyFailure?: boolean;
+    notifyCanceled?: boolean;
     generationType?: CanvasImageGenerationType;
     model?: string;
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";

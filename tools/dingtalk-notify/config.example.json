@@ -1,0 +1,13 @@
+{
+  "allowedOrigins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.189.151:3000"],
+  "channels": [
+    {
+      "id": "internal-app",
+      "name": "企业内部应用",
+      "appKey": "填写应用 AppKey",
+      "appSecret": "填写应用 AppSecret",
+      "agentId": 0,
+      "users": [{ "id": "填写员工 userId", "name": "显示名称" }]
+    }
+  ]
+}

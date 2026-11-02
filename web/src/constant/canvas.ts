@@ -11,6 +11,7 @@ type CanvasNodeSpec = {
 };
 
 export const NODE_DEFAULT_SIZE = {
+    [CanvasNodeType.DingTalk]: { width: 300, height: 330, title: "钉钉工作通知" },
     [CanvasNodeType.Pipeline]: { width: 240, height: 140, title: "流水线" },
     [CanvasNodeType.Image]: { width: 340, height: 240, get title() { return i18n.t("canvas.nodeTypes.image"); } },
     [CanvasNodeType.Text]: { width: 340, height: 240, get title() { return i18n.t("canvas.nodeTypes.text"); } },
@@ -21,6 +22,7 @@ export const NODE_DEFAULT_SIZE = {
 } satisfies Record<CanvasNodeType, { width: number; height: number; title: string }>;
 
 export const NODE_SPECS = {
+    [CanvasNodeType.DingTalk]: { ...NODE_DEFAULT_SIZE[CanvasNodeType.DingTalk], metadata: { notifySuccess: true, notifyFailure: true } },
     [CanvasNodeType.Pipeline]: { ...NODE_DEFAULT_SIZE[CanvasNodeType.Pipeline], metadata: {} },
     [CanvasNodeType.Image]: {
         width: 340, height: 240, get title() { return NODE_DEFAULT_SIZE[CanvasNodeType.Image].title; },

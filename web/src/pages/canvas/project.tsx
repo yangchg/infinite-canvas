@@ -25,6 +25,9 @@ import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
+import { CanvasDingTalkNodePanel } from "@/components/canvas/canvas-dingtalk-node-panel";
+import { useGenerationNotifications } from "./hooks/use-generation-notifications";
+import type { NotificationOutcome } from "@/services/api/dingtalk";
 import { CanvasPipelineNodePanel } from "@/components/canvas/canvas-pipeline-node-panel";
 import { executePipeline, planPipeline } from "@/lib/canvas/canvas-pipeline";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -285,6 +288,7 @@ function InfiniteCanvasPage() {
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
+    const { beginNotification, deliveries, checkNotification, retryNotification } = useGenerationNotifications(projectId, currentProject?.title || "画布", nodesRef, connectionsRef);
     const pipelineRunRef = useRef<{ entryId: string; controller: AbortController; currentNodeId?: string } | null>(null);
     const [pipelineState, setPipelineState] = useState<{ entryId: string; running: boolean; status: string } | null>(null);
     useEffect(() => {
@@ -2349,6 +2353,8 @@ function InfiniteCanvasPage() {
         }
         const controller = startGenerationRequest(nodeId, nodeId, nodeId, pipelineController);
         startGenerationRequest(targetId, nodeId, nodeId, controller);
+        const notify = beginNotification(nodeId);
+        let outcome: NotificationOutcome = { status: "failure", succeeded: 0, failed: getGenerationCount(config.count) };
         setRunningNodeId(nodeId);
         try {
             const context = await hydrateNodeGenerationContext(buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, source.metadata?.composerContent ?? source.metadata?.prompt ?? ""));
@@ -2402,17 +2408,20 @@ function InfiniteCanvasPage() {
             nodesRef.current = nextNodes;
             setNodes(nextNodes);
             setHistoryState({ canUndo: true, canRedo: false });
+            outcome = { status: "success", succeeded: count, failed: 0 };
             return true;
         } catch (error) {
+            if (controller.signal.aborted || isGenerationCanceled(error)) { outcome.status = "canceled"; outcome.failed = 0; }
             if (!controller.signal.aborted && !isGenerationCanceled(error)) message.error(error instanceof Error ? error.message : t("canvas.projectPage.generationFailed"));
             if (pipelineController) throw error;
             controller.abort();
         } finally {
+            notify(outcome);
             finishGenerationRequest(targetId, controller);
             finishGenerationRequest(nodeId, controller);
             setRunningNodeId((current) => current === nodeId ? null : current);
         }
-    }, [createHistoryEntry, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t]);
+    }, [beginNotification, createHistoryEntry, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t]);
 
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, execution?: { controller: AbortController; onSuccess: () => void }) => {
@@ -2461,27 +2470,29 @@ function InfiniteCanvasPage() {
             setRunningNodeId(nodeId);
             const overwriteExisting = effectiveConfig.nodeRegenerateBehavior === "overwrite";
             const runController = startGenerationRequest(nodeId, nodeId, nodeId, execution?.controller);
+            const notify = beginNotification(nodeId);
+            let outcome: NotificationOutcome = { status: "failure", succeeded: 0, failed: 1 };
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
-            const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
-            );
-            const effectivePrompt = generationContext.prompt.trim();
-            if (runController.signal.aborted) {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-                return;
-            }
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
-            if (!effectivePrompt && (mode === "text" || mode === "audio")) {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-                return;
-            }
             let pendingChildIds: string[] = [];
-            if (markSourceStatus) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...(node.type === CanvasNodeType.Config ? {} : { prompt }), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
-
             try {
+                const generationContext = await hydrateNodeGenerationContext(
+                    buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
+                );
+                const effectivePrompt = generationContext.prompt.trim();
+                if (runController.signal.aborted) {
+                    finishGenerationRequest(nodeId, runController);
+                    setRunningNodeId(null);
+                    return;
+                }
+                if (!effectivePrompt && (mode === "text" || mode === "audio")) {
+                    finishGenerationRequest(nodeId, runController);
+                    setRunningNodeId(null);
+                    return;
+                }
+                if (markSourceStatus) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...(node.type === CanvasNodeType.Config ? {} : { prompt }), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
+
                 if (mode === "image") {
                     const count = getGenerationCount(generationConfig.count);
                     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
@@ -2560,6 +2571,7 @@ function InfiniteCanvasPage() {
                     setDialogNodeId(nodeId);
 
                     const controller = rootId === nodeId ? runController : startGenerationRequest(rootId, nodeId, nodeId, runController);
+                    let successCount = 0;
                     let hasSuccess = false;
                     let hasFailure = false;
                     let firstError = "";
@@ -2596,6 +2608,7 @@ function InfiniteCanvasPage() {
                                         };
                                     }),
                                 );
+                                successCount++;
                                 hasSuccess = true;
                                 if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
                                 return true;
@@ -2609,6 +2622,7 @@ function InfiniteCanvasPage() {
                             return false;
                         }),
                     );
+                    outcome = { status: hasSuccess && !hasFailure ? "success" : "failure", succeeded: successCount, failed: count - successCount };
                     if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
                     if (controller.signal.aborted) {
                         setNodes((prev) => prev.map((node) => (node.id === nodeId && isConfigNode && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
@@ -2674,6 +2688,7 @@ function InfiniteCanvasPage() {
                             videoMode: generationConfig.videoMode,
                             references: generationReferenceUrls(generationContext),
                         }, generationContext.referenceVideos, generationContext.referenceAudios);
+                        outcome = { status: "success", succeeded: 1, failed: 0 };
                     } finally {
                         finishGenerationRequest(videoId, controller);
                     }
@@ -2706,6 +2721,7 @@ function InfiniteCanvasPage() {
                     try {
                         const audio = await storeGeneratedAudio(await requestAudioGeneration(generationConfig, effectivePrompt, { signal: controller.signal }), generationConfig.audioFormat);
                         setNodes((prev) => prev.map((node) => (node.id === audioId ? { ...node, metadata: { ...node.metadata, ...audioMetadata(audio), prompt: effectivePrompt, ...buildAudioGenerationMetadata(generationConfig) } } : node)));
+                        outcome = { status: "success", succeeded: 1, failed: 0 };
                     } finally {
                         finishGenerationRequest(audioId, controller);
                     }
@@ -2805,6 +2821,7 @@ function InfiniteCanvasPage() {
                 if (controller.signal.aborted) return;
                 const completedTexts = results.flatMap((item) => (item?.status === NODE_STATUS_SUCCESS ? [item] : []));
                 const failedTexts = results.filter((item) => item?.status === NODE_STATUS_ERROR);
+                outcome = { status: failedTexts.length || !completedTexts.length ? "failure" : "success", succeeded: completedTexts.length, failed: failedTexts.length };
                 const firstText = completedTexts[0];
                 if (completedTexts.length <= 1) setExpandedBatchNodeIds((current) => new Set([...current].filter((id) => id !== rootId)));
                 if (failedTexts.length) message.error(firstText ? t("canvas.projectPage.partialTextFailed") : failedTexts[0]?.errorDetails || t("canvas.projectPage.generationFailed"));
@@ -2849,11 +2866,13 @@ function InfiniteCanvasPage() {
                     ),
                 );
             } finally {
+                if (runController.signal.aborted) { outcome.status = "canceled"; outcome.failed = 0; }
+                notify(outcome);
                 finishGenerationRequest(nodeId, runController);
                 setRunningNodeId(null);
             }
         },
-        [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [beginNotification, completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
     );
     const stopPipeline = useCallback(() => {
         const run = pipelineRunRef.current;
@@ -3268,7 +3287,13 @@ function InfiniteCanvasPage() {
     );
 
     const renderNodeContentPanel = useCallback(
-        (contentNode: CanvasNodeData) => contentNode.type === CanvasNodeType.Pipeline ? (
+        (contentNode: CanvasNodeData) => contentNode.type === CanvasNodeType.DingTalk ? (
+            <CanvasDingTalkNodePanel node={contentNode}
+                sources={connections.filter((edge) => edge.toNodeId === contentNode.id).flatMap((edge) => nodes.filter((node) => node.id === edge.fromNodeId && node.type === CanvasNodeType.Config).map((node) => node.title))}
+                status={deliveries[contentNode.id]?.message} onChange={handleConfigNodeChange}
+                onRetry={deliveries[contentNode.id]?.retryable ? () => retryNotification(contentNode.id) : undefined}
+                onCheck={deliveries[contentNode.id] ? () => checkNotification(contentNode.id) : undefined} />
+        ) : contentNode.type === CanvasNodeType.Pipeline ? (
             <CanvasPipelineNodePanel
                 running={pipelineState?.entryId === contentNode.id && pipelineState.running}
                 disabled={Boolean(pipelineState?.running || runningNodeId)}
@@ -3292,7 +3317,7 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, handleRunPipeline, nodes, pipelineState, runningNodeId, stopPipeline],
+        [retryNotification, checkNotification, deliveries, configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, handleRunPipeline, nodes, pipelineState, runningNodeId, stopPipeline],
     );
 
     const hoverPreviewNode = hoverPreviewNodeId ? nodeById.get(hoverPreviewNodeId) || null : null;
