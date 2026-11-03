@@ -1,3 +1,4 @@
+import { AccountMenu } from "./account-menu";
 import type { CSSProperties } from "react";
 import { Tooltip } from "antd";
 import { BookOpen, Keyboard, Puzzle, Settings2 } from "lucide-react";
@@ -37,6 +38,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
 
     return (
         <div className="inline-flex shrink-0 items-center gap-1">
+            <AccountMenu />
             {onOpenPlugins ? (
                 <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenPlugins} aria-label={t("topNav.plugins")} title={t("topNav.plugins")}>
                     <Puzzle className="size-4" />

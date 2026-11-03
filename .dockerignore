@@ -2,6 +2,8 @@
 .idea
 docs2
 data
+server/node_modules
+server/data
 docs/.next
 docs/.source
 docs/node_modules

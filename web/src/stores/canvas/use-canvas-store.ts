@@ -1,14 +1,22 @@
 import { create } from "zustand";
-import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
-
 import { nanoid } from "nanoid";
-import i18n from "@/i18n";
-import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import { workspaceApi, jsonBody, setWorkspaceCsrf } from "@/services/api/workspace";
+import { useSessionStore } from "@/stores/use-session-store";
 
 export type CanvasProject = {
     id: string;
+    number?: string;
+    projectId?: string;
+    ownerId?: string;
+    ownerName?: string;
+    revision?: number;
+    publishedId?: string | null;
+    deleted?: boolean;
+    kind?: "canvas" | "usage";
+    sourceId?: string | null;
+    sourceVersion?: string | null;
     title: string;
     createdAt: string;
     updatedAt: string;
@@ -20,127 +28,123 @@ export type CanvasProject = {
     showImageInfo: boolean;
     viewport: ViewportTransform;
 };
-
-export type CanvasDeletedProject = {
-    id: string;
-    deletedAt: string;
-};
-
+export type CanvasDeletedProject = { id: string; deletedAt: string };
+export type WorkspaceProject = { id: string; title: string; archived: number; deleted: number };
 type CanvasStore = {
     hydrated: boolean;
     projects: CanvasProject[];
+    groups: WorkspaceProject[];
+    selectedGroupId: string;
     deletedProjects: CanvasDeletedProject[];
+    error: string;
+    saving: boolean;
+    dirty: boolean;
+    load: () => Promise<void>;
+    selectGroup: (id: string) => void;
+    flush: () => Promise<void>;
     createProject: (title?: string) => string;
     importProject: (project: Partial<CanvasProject>) => string;
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
-    deleteProjects: (ids: string[]) => void;
-    replaceProjects: (projects: CanvasProject[], deletedProjects?: CanvasDeletedProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport">>) => void;
+    deleteProjects: (ids: string[]) => Promise<void>;
+    updateProject: (id: string, patch: Partial<CanvasProject>) => void;
+    accept: (project: CanvasProject) => void;
 };
+const pending = new Map<string, CanvasProject>();
+const revisions = new Map<string, number>();
+let timer: ReturnType<typeof setTimeout> | undefined;
+let draining: Promise<void> | undefined;
+let editVersion = 0;
 
-const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
-const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
-type PersistedCanvasState = Pick<CanvasStore, "projects" | "deletedProjects">;
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let queuedPersistState: PersistedCanvasState | null = null;
+function schedule(project: CanvasProject) {
+    editVersion += 1;
+    pending.set(project.id, project);
+    useCanvasStore.setState({ dirty: true });
+    clearTimeout(timer);
+    // Preserve the existing 400 ms autosave cadence.
+    timer = setTimeout(() => { void useCanvasStore.getState().flush().catch(() => undefined); }, 400);
+}
 
-const canvasStorage: PersistStorage<CanvasStore> = {
-    getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
-        if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
-        queuedPersistState = parsed.state as PersistedCanvasState;
-        return parsed;
+export const useCanvasStore = create<CanvasStore>((set, get) => ({
+    hydrated: false, projects: [], groups: [], selectedGroupId: "", deletedProjects: [], error: "", saving: false, dirty: false,
+    selectGroup: (id) => { sessionStorage.setItem("canvas-project", id); set({ selectedGroupId: id }); },
+    load: async () => {
+        try {
+            await get().flush();
+            const requestedVersion = editVersion;
+            const [projects, groups] = await Promise.all([workspaceApi<CanvasProject[]>("/canvases"), workspaceApi<WorkspaceProject[]>("/projects")]);
+            // An edit made during refresh remains authoritative in this tab.
+            if (requestedVersion !== editVersion) { set({ groups, hydrated: true }); return; }
+            projects.forEach((project) => revisions.set(project.id, project.revision || 0));
+            const preferred = get().selectedGroupId || sessionStorage.getItem("canvas-project");
+            const selectedGroupId = groups.find((item) => !item.deleted && item.id === preferred)?.id || groups.find((item) => !item.deleted)?.id || "";
+            set({ projects, groups, selectedGroupId, hydrated: true, error: "" });
+        } catch (error) { set({ error: String(error) }); }
     },
-    setItem: (name, value) => {
-        const nextState = value.state as PersistedCanvasState;
-        if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.deletedProjects === nextState.deletedProjects) return;
-        queuedPersistState = nextState;
-        if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => {
-            saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
-        }, 400);
+    flush: () => {
+        clearTimeout(timer);
+        if (draining) return draining;
+        draining = (async () => {
+            set({ saving: pending.size > 0 });
+            try {
+                if (pending.size) {
+                    const session = await workspaceApi<{ user: { id: string }; csrf: string }>("/auth/me");
+                    if (session.user.id !== useSessionStore.getState().user?.id) throw new Error("浏览器已切换账号，请使用原账号登录后重试；当前草稿仍保留");
+                    setWorkspaceCsrf(session.csrf);
+                }
+                while (pending.size) {
+                    const [id, project] = pending.entries().next().value!;
+                    const response = await workspaceApi<{ revision: number; number: string }>(`/canvases/${id}`, { method: "PUT", body: jsonBody({ projectId: project.projectId, title: project.title, revision: revisions.get(id) || 0, content: project }) });
+                    revisions.set(id, response.revision);
+                    if (pending.get(id) === project) pending.delete(id);
+                    set((state) => ({ projects: state.projects.map((item) => item.id === id ? { ...item, revision: response.revision, number: response.number } : item) }));
+                }
+                set({ error: "", dirty: false });
+            } catch (error) { set({ error: String(error), dirty: true }); throw error; }
+            finally { set({ saving: false }); }
+        })().finally(() => { draining = undefined; });
+        return draining;
     },
-    removeItem: (name) => localForageStorage.removeItem(name),
-};
+    createProject: (title = "未命名画布") => get().importProject({ title }),
+    importProject: (source) => {
+        const projectId = get().selectedGroupId;
+        const group = get().groups.find((item) => item.id === projectId && !item.archived && !item.deleted);
+        if (!group) throw new Error("请先选择一个可编辑项目；项目由管理员创建并分配成员");
+        const now = new Date().toISOString();
+        const project: CanvasProject = {
+            id: nanoid(), projectId, ownerId: useSessionStore.getState().user?.id, ownerName: useSessionStore.getState().user?.displayName,
+            revision: 0, kind: "canvas", title: source.title || "未命名画布", createdAt: now, updatedAt: now,
+            nodes: source.nodes || [], connections: source.connections || [], chatSessions: source.chatSessions || [], activeChatId: source.activeChatId || null,
+            backgroundMode: source.backgroundMode || "lines", showImageInfo: source.showImageInfo || false, viewport: source.viewport || { x: 0, y: 0, k: 1 },
+        };
+        set((state) => ({ projects: [project, ...state.projects] }));
+        schedule(project);
+        return project.id;
+    },
+    openProject: (id) => {
+        const project = get().projects.find((item) => item.id === id && !item.deleted) || null;
+        if (project?.projectId) get().selectGroup(project.projectId);
+        return project;
+    },
+    renameProject: (id, title) => { if (title.trim()) get().updateProject(id, { title: title.trim() }); },
+    updateProject: (id, patch) => {
+        const current = get().projects.find((item) => item.id === id && !item.deleted);
+        if (!current || get().groups.find((item) => item.id === current.projectId)?.archived) return;
+        const project = { ...current, ...patch, id: current.id, projectId: current.projectId, ownerId: current.ownerId, updatedAt: new Date().toISOString() };
+        set((state) => ({ projects: state.projects.map((item) => item.id === id ? project : item) }));
+        schedule(project);
+    },
+    deleteProjects: async (ids) => {
+        await get().flush();
+        for (const id of ids) await workspaceApi(`/canvases/${id}/lifecycle`, { method: "PATCH", body: jsonBody({ deleted: true }) });
+        await get().load();
+    },
+    accept: (project) => {
+        revisions.set(project.id, project.revision || 0);
+        set((state) => ({ projects: [project, ...state.projects.filter((item) => item.id !== project.id)] }));
+    },
+}));
 
-export const useCanvasStore = create<CanvasStore>()(
-    persist(
-        (set, get) => ({
-            hydrated: false,
-            projects: [],
-            deletedProjects: [],
-            createProject: (title = i18n.t("canvas.project.untitled")) => {
-                const now = new Date().toISOString();
-                const id = nanoid();
-                const project: CanvasProject = {
-                    id,
-                    title,
-                    createdAt: now,
-                    updatedAt: now,
-                    nodes: [],
-                    connections: [],
-                    chatSessions: [],
-                    activeChatId: null,
-                    backgroundMode: "lines",
-                    showImageInfo: false,
-                    viewport: initialViewport,
-                };
-                set((state) => ({ projects: [project, ...state.projects] }));
-                return id;
-            },
-            importProject: (source) => {
-                const now = new Date().toISOString();
-                const project: CanvasProject = {
-                    id: nanoid(),
-                    title: source.title || i18n.t("canvas.project.imported"),
-                    createdAt: source.createdAt || now,
-                    updatedAt: now,
-                    nodes: source.nodes || [],
-                    connections: source.connections || [],
-                    chatSessions: source.chatSessions || [],
-                    activeChatId: source.activeChatId || null,
-                    backgroundMode: source.backgroundMode || "lines",
-                    showImageInfo: source.showImageInfo || false,
-                    viewport: source.viewport || initialViewport,
-                };
-                set((state) => ({ projects: [project, ...state.projects] }));
-                return project.id;
-            },
-            openProject: (id) => {
-                return get().projects.find((item) => item.id === id) || null;
-            },
-            renameProject: (id, title) =>
-                set((state) => ({
-                    projects: state.projects.map((project) => (project.id === id ? { ...project, title: title.trim() || project.title, updatedAt: new Date().toISOString() } : project)),
-                })),
-            deleteProjects: (ids) =>
-                set((state) => {
-                    const now = new Date().toISOString();
-                    const removing = new Set(ids);
-                    const projects = state.projects.filter((project) => !removing.has(project.id));
-                    const deletedProjects = [...state.deletedProjects.filter((item) => !removing.has(item.id)), ...ids.map((id) => ({ id, deletedAt: now }))];
-                    return { projects, deletedProjects };
-                }),
-            replaceProjects: (projects, deletedProjects = []) => set({ projects, deletedProjects }),
-            updateProject: (id, patch) =>
-                set((state) => ({
-                    projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),
-                })),
-        }),
-        {
-            name: CANVAS_STORE_KEY,
-            storage: canvasStorage,
-            partialize: (state) =>
-                ({
-                    projects: state.projects,
-                    deletedProjects: state.deletedProjects,
-                }) as StorageValue<CanvasStore>["state"],
-            onRehydrateStorage: () => () => {
-                useCanvasStore.setState({ hydrated: true });
-            },
-        },
-    ),
-);
+window.addEventListener("beforeunload", (event) => {
+    if (useCanvasStore.getState().dirty) { event.preventDefault(); event.returnValue = ""; }
+});

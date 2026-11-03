@@ -1,11 +1,24 @@
 services:
   app:
-    image: ghcr.io/basketikun/infinite-canvas:latest
+    image: infinite-canvas:accounts-projects
+    build: .
     container_name: infinite-canvas
     ports:
       - "3000:3000"
     restart: unless-stopped
+    depends_on:
+      - backend
     # 统计分析（可选，默认关闭）。每家一个独立变量，填了谁就启用谁，可同时启用多家：
     # environment:
     #   ANALYTICS_GA4_ID: G-XXXXXXXXXX                    # Google Analytics 4 衡量 ID
     #   ANALYTICS_BAIDU_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 百度统计站点 ID
+  backend:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      TRUST_PROXY: "1"
+    volumes:
+      - ./data/canvas-server:/app/data
+    restart: unless-stopped

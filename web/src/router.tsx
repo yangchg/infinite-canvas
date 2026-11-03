@@ -1,3 +1,5 @@
+import CanvasViewer from "@/pages/canvas/viewer";
+import LoginPage, { RequireSession } from "@/pages/login";
 import { createBrowserRouter, Outlet } from "react-router-dom";
 
 import { AnalyticsTracker } from "@/components/layout/analytics-tracker";
@@ -13,6 +15,8 @@ import PromptsPage from "@/pages/prompts";
 import VideoPage from "@/pages/video";
 
 export const router = createBrowserRouter([
+    { path: "/login", element: <LoginPage /> },
+    { element: <RequireSession />, children: [
     {
         element: (
             <UserLayout>
@@ -27,9 +31,11 @@ export const router = createBrowserRouter([
             { path: "/assets", element: <AssetsPage /> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <CanvasPage /> },
+            { path: "/canvas/public/:id", element: <CanvasViewer /> },
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/config", element: <ConfigPage /> },
         ],
     },
     { path: "*", element: <NotFound /> },
+    ] },
 ]);

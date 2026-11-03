@@ -1,3 +1,4 @@
+import CanvasViewer from "./viewer";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -151,6 +152,8 @@ function applyGeneratedVideo(item: CanvasNodeData, video: UploadedFile, extra: C
 
 export default function CanvasPage() {
     const [mounted, setMounted] = useState(false);
+    const { id } = useParams();
+    const archived = useCanvasStore((state) => state.groups.find((group) => group.id === state.projects.find((item) => item.id === id)?.projectId)?.archived);
 
     useEffect(() => {
         setMounted(true);
@@ -158,7 +161,7 @@ export default function CanvasPage() {
 
     if (!mounted) return <CanvasRefreshShell />;
 
-    return <InfiniteCanvasPage />;
+    return archived ? <CanvasViewer published={false} /> : <InfiniteCanvasPage key={id} />;
 }
 
 function measureFocusFrame(container: HTMLDivElement | null, nodeId: string) {
@@ -488,7 +491,7 @@ function InfiniteCanvasPage() {
             setHistoryState({ canUndo: false, canRedo: false });
             setProjectLoaded(true);
         };
-        void restore();
+        void restore().catch((error) => message.error(`画布资源加载失败：${String(error)}`));
     }, [hydrated, navigate, openProject, projectId]);
 
     useEffect(() => {
@@ -1207,9 +1210,7 @@ function InfiniteCanvasPage() {
     }, [createProject, navigate, t]);
 
     const deleteCurrentProject = useCallback(() => {
-        deleteProjects([projectId]);
-        cleanupAssetImages();
-        navigate("/canvas");
+        void deleteProjects([projectId]).then(() => { cleanupAssetImages(); navigate("/canvas"); }).catch((error) => message.error(String(error)));
     }, [cleanupAssetImages, deleteProjects, navigate, projectId]);
 
     const exportCurrentProject = useCallback(async () => {

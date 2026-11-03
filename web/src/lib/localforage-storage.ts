@@ -2,7 +2,7 @@ import localforage from "localforage";
 import type { StateStorage } from "zustand/middleware";
 
 localforage.config({
-    name: "infinite-canvas",
+    name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`,
     storeName: "app_state",
 });
 
@@ -12,7 +12,7 @@ export const localForageStorage: StateStorage = {
         try {
             return (await localforage.getItem<string>(name)) || null;
         } catch {
-            return window.localStorage.getItem(name);
+            return window.localStorage.getItem(`${sessionStorage.getItem("canvas-account")}:${name}`);
         }
     },
     setItem: async (name, value) => {
@@ -20,7 +20,7 @@ export const localForageStorage: StateStorage = {
         try {
             await localforage.setItem(name, value);
         } catch {
-            window.localStorage.setItem(name, value);
+            window.localStorage.setItem(`${sessionStorage.getItem("canvas-account")}:${name}`, value);
         }
     },
     removeItem: async (name) => {
@@ -28,7 +28,7 @@ export const localForageStorage: StateStorage = {
         try {
             await localforage.removeItem(name);
         } catch {
-            window.localStorage.removeItem(name);
+            window.localStorage.removeItem(`${sessionStorage.getItem("canvas-account")}:${name}`);
         }
     },
 };

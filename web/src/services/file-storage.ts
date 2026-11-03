@@ -1,3 +1,4 @@
+import { uploadServerFile, readServerFile } from "@/services/api/workspace";
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 
@@ -5,12 +6,13 @@ import { withLocalProxy } from "@/stores/use-config-store";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
-const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
+const store = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "media_files" });
 const objectUrls = new Map<string, string>();
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
     const blob = typeof input === "string" ? await (await fetch(withLocalProxy(input))).blob() : input;
     const storageKey = `${prefix}:${nanoid()}`;
+    await uploadServerFile(storageKey, blob);
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -22,7 +24,7 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = await getMediaBlob(storageKey);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -30,10 +32,15 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getMediaBlob(storageKey: string) {
-    return store.getItem<Blob>(storageKey);
+    const cached = await store.getItem<Blob>(storageKey);
+    if (cached) return cached;
+    const blob = await readServerFile(storageKey);
+    await store.setItem(storageKey, blob);
+    return blob;
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
+    await uploadServerFile(storageKey, blob);
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);

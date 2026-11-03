@@ -76,8 +76,8 @@ export type AppSyncProgressEvent = {
 export type AppSyncProgress = (event: AppSyncProgressEvent) => void;
 
 const FILE_CONCURRENCY = 3;
-const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
-const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+const imageLogStore = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "image_generation_logs" });
+const videoLogStore = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "video_generation_logs" });
 type LogStore = typeof imageLogStore;
 const storageKeyPattern = /^(image|video|audio|file|video-reference|audio-reference):/;
 
@@ -86,17 +86,7 @@ export async function syncAppDataToWebdav(config: WebdavSyncConfig, onProgress?:
     await Promise.all([waitForHydration(useCanvasStore), waitForHydration(useAssetStore)]);
 
     const [canvas, assets, imageLogs, videoLogs] = await Promise.all([
-        syncDomain<CanvasDomainData>(config, onProgress, {
-            key: "canvas",
-            label: "画布",
-            emptyData: { projects: [], deleted: [] },
-            localData: async () => {
-                const { projects, deletedProjects } = useCanvasStore.getState();
-                return { projects, deleted: deletedProjects };
-            },
-            mergeData: mergeCanvasData,
-            applyData: async (data) => useCanvasStore.getState().replaceProjects(data.projects, data.deleted),
-        }),
+        Promise.resolve({ data: { projects: [], deleted: [] }, mergedRemote: false, files: 0, manifestBytes: 0, uploadedFiles: 0, uploadedBytes: 0 } as SyncDomainResult<CanvasDomainData>),
         syncDomain<AssetDomainData>(config, onProgress, {
             key: "assets",
             label: "我的资产",

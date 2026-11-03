@@ -1,3 +1,4 @@
+import { uploadServerFile, readServerFile } from "@/services/api/workspace";
 import localforage from "localforage";
 
 import { nanoid } from "nanoid";
@@ -14,10 +15,10 @@ export type UploadedImage = {
     mimeType: string;
 };
 
-const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
-const previewStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_previews" });
-const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
-const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+const store = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "image_files" });
+const previewStore = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "image_previews" });
+const imageLogStore = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "image_generation_logs" });
+const videoLogStore = localforage.createInstance({ name: `infinite-canvas:${sessionStorage.getItem("canvas-account") || "signed-out"}`, storeName: "video_generation_logs" });
 const objectUrls = new Map<string, string>();
 const previewUrls = new Map<string, string>();
 const previewListeners = new Set<() => void>();
@@ -56,7 +57,8 @@ async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<Uploa
         const meta = await loadImageMeta(url, options);
         if (!meta) throw new Error(i18n.t("common.imageReadFailed"));
         throwIfAborted(options?.signal);
-        await store.setItem(storageKey, blob);
+        await uploadServerFile(storageKey, blob);
+    await store.setItem(storageKey, blob);
         throwIfAborted(options?.signal);
         objectUrls.set(storageKey, url);
         await storeImagePreview(storageKey, blob);
@@ -144,7 +146,7 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = await getImageBlob(storageKey);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -152,7 +154,11 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getImageBlob(storageKey: string) {
-    return store.getItem<Blob>(storageKey);
+    const cached = await store.getItem<Blob>(storageKey);
+    if (cached) return cached;
+    const blob = await readServerFile(storageKey);
+    await store.setItem(storageKey, blob);
+    return blob;
 }
 
 // 缩略图按图片的 storageKey 另存一份 WebP，只放在本地 IndexedDB 里，不写进节点数据，也不参与导出和 WebDAV 同步。
@@ -214,6 +220,7 @@ async function deleteImagePreview(storageKey: string) {
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
+    await uploadServerFile(storageKey, blob);
     await store.setItem(storageKey, blob);
     await deleteImagePreview(storageKey);
     await storeImagePreview(storageKey, blob);

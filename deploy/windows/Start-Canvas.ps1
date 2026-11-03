@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.env'))) {
 & (Join-Path $PSScriptRoot 'Start-ProviderRelay.ps1')
 & (Join-Path $PSScriptRoot '..\..\tools\dingtalk-notify\Start-Notify.ps1')
 if ($Build) {
-    docker compose --env-file "$PSScriptRoot\.env" -f "$PSScriptRoot\compose.yaml" build app
+    docker compose --env-file "$PSScriptRoot\.env" -f "$PSScriptRoot\compose.yaml" build app backend
     if ($LASTEXITCODE -ne 0) { throw 'Build failed; existing container was not replaced.' }
 }
 docker compose --env-file "$PSScriptRoot\.env" -f "$PSScriptRoot\compose.yaml" up -d --no-build

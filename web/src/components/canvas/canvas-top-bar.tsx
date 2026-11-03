@@ -1,3 +1,4 @@
+import { CanvasSaveStatus } from "./canvas-save-status";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
@@ -135,6 +136,7 @@ export function CanvasTopBar({
                             </button>
                         )}
                     </div>
+                    <CanvasSaveStatus />
                     <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} />
                 </div>
 
