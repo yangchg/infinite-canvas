@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { database, transaction } from "./database.js";
 import { digest, hashPassword, verifyPassword } from "./password.js";
 import { contentSchema, cleanContent, fileKeys, publishContent } from "./content.js";
+import { registerModels } from "./models.js";
 
 const name = z.string().trim().min(1);
 const credentials = z.object({ username: name.regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().min(1) });
@@ -303,5 +304,6 @@ export async function createApp(options = {}) {
     app.setNotFoundHandler((request, reply) => request.url.startsWith("/api/") ? reply.code(404).send({ message: "接口不存在" }) : reply.sendFile("index.html"));
   }
   app.addHook("onClose", async () => db.close());
+  await registerModels(app);
   return app;
 }

@@ -1,3 +1,4 @@
+import { workspaceHeaders } from "./workspace";
 import axios from "axios";
 
 import i18n from "@/i18n";
@@ -15,7 +16,7 @@ function aiApiUrl(config: AiConfig, path: string) {
 
 function aiHeaders(config: AiConfig) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.baseUrl.startsWith("/api/model-gateway/") ? workspaceHeaders() : { Authorization: `Bearer ${config.apiKey}` }),
         "Content-Type": "application/json",
     };
 }

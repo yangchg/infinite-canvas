@@ -4,6 +4,7 @@ export class WorkspaceError extends Error {
 }
 let csrf = "";
 export function setWorkspaceCsrf(value: string) { csrf = value; }
+export function workspaceHeaders() { return { "X-CSRF-Token": csrf, "X-Account-Id": sessionStorage.getItem("canvas-account") || "" }; }
 export async function workspaceApi<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers);
     if (options.body != null && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");

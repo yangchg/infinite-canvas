@@ -6,10 +6,74 @@ import { join } from "node:path";
 import { backup } from "node:sqlite";
 import { createApp } from "../src/app.js";
 import { database } from "../src/database.js";
+import { createServer } from "node:http";
 import { workspaceApi, setWorkspaceCsrf } from "../../web/src/services/api/workspace.ts";
 
 const origin = "http://localhost:3000";
 const blank = { nodes: [], connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } };
+
+test("shared models protect credentials, proxy generation and isolate video tasks", async (t) => {
+  const { send, admin, owner, member } = await fixture(t);
+  const calls = [];
+  const upstream = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    calls.push({ url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() });
+    if (req.url === "/v1/responses") { res.writeHead(200, { "content-type": "text/event-stream" }); res.end('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'); }
+    else if (req.url === "/v1/videos") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ id: "job-1", status: "queued" })); }
+    else if (req.url === "/v1/videos/job-1/content") { res.setHeader("content-type", "video/mp4"); res.end("video-bytes"); }
+    else if (req.url === "/v1/videos/job-1") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ id: "job-1", status: "completed" })); }
+    else if (req.url?.endsWith(":predictLongRunning")) { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ name: "models/movie/operations/job-2" })); }
+    else if (req.url === "/v1beta/models/movie/operations/job-2") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri: `http://127.0.0.1:${upstream.address().port}/media?key=secret-test` } }] } } })); }
+    else if (req.url === "/media") { res.end("gemini-video"); }
+    else { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ data: [{ b64_json: "image" }] })); }
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const settings = { name: "Shared", model: "test-model", capability: "text", apiFormat: "openai", baseUrl: `http://127.0.0.1:${upstream.address().port}`, apiKey: "secret-test", enabled: true };
+  assert.equal((await send(null, "GET", "/models")).statusCode, 401);
+  assert.equal((await send(owner, "PUT", "/admin/models/new", settings)).statusCode, 403);
+  const { id } = (await send(admin, "PUT", "/admin/models/new", settings)).json();
+  const publicList = await send(owner, "GET", "/models");
+  assert.equal(publicList.statusCode, 200);
+  assert.equal(publicList.body.includes("secret-test"), false);
+  assert.equal(publicList.body.includes("baseUrl"), false);
+  assert.equal((await send(admin, "GET", "/admin/models")).body.includes("secret-test"), false);
+  const path = `/model-gateway/${id}`;
+  assert.equal((await send(owner, "POST", `${path}/v1/responses`, { model: "other" })).statusCode, 400);
+  assert.equal((await send(owner, "POST", `${path}/v1/responses`, { model: "test-model" }, { "x-csrf-token": "wrong" })).statusCode, 403);
+  assert.equal((await send(owner, "POST", `${path}/v1/unknown`, { model: "test-model" })).statusCode, 400);
+  const stream = await send(owner, "POST", `${path}/v1/responses`, { model: "test-model", stream: true });
+  assert.equal(stream.statusCode, 200, stream.body);
+  assert.match(stream.body, /hello/);
+  assert.equal(calls.at(-1).headers.authorization, "Bearer secret-test");
+  assert.equal(calls.at(-1).headers.cookie, undefined);
+  await send(admin, "PUT", `/admin/models/${id}`, { ...settings, capability: "image", apiKey: "" });
+  const form = new FormData(); form.append("model", "test-model"); form.append("image", new Blob(["image-bytes"]), "ref.png");
+  const encoded = new Response(form);
+  const edited = await send(owner, "POST", `${path}/v1/images/edits`, Buffer.from(await encoded.arrayBuffer()), { "content-type": encoded.headers.get("content-type") });
+  assert.equal(edited.statusCode, 200, edited.body);
+  assert.match(calls.at(-1).body, /image-bytes/);
+  assert.equal(calls.at(-1).headers.authorization, "Bearer secret-test");
+  await send(admin, "PUT", `/admin/models/${id}`, { ...settings, capability: "video" });
+  assert.equal((await send(owner, "POST", `${path}/v1/videos`, { model: "test-model" })).statusCode, 200);
+  assert.equal((await send(member, "GET", `${path}/v1/videos/job-1`)).statusCode, 403);
+  assert.equal((await send(owner, "GET", `${path}/v1/videos/job-1`)).statusCode, 200);
+  assert.equal((await send(owner, "GET", `${path}/v1/videos/job-1/content`)).body, "video-bytes");
+  const gemini = (await send(admin, "PUT", "/admin/models/new", { ...settings, model: "movie", capability: "video", apiFormat: "gemini" })).json().id;
+  const gp = `/model-gateway/${gemini}`;
+  assert.equal((await send(owner, "POST", `${gp}/v1beta/models/movie:predictLongRunning`, {})).statusCode, 200);
+  assert.equal(calls.at(-1).headers["x-goog-api-key"], "secret-test");
+  const poll = await send(owner, "GET", `${gp}/v1beta/models/movie/operations/job-2`);
+  assert.equal(poll.statusCode, 200, poll.body);
+  assert.equal(poll.body.includes("secret-test"), false);
+  const download = poll.json().response.generateVideoResponse.generatedSamples[0].video.uri.replace(/^\/api/, "");
+  assert.equal((await send(member, "GET", download)).statusCode, 404);
+  assert.equal((await send(owner, "GET", download)).body, "gemini-video");
+  await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: false });
+  assert.equal((await send(owner, "POST", `${path}/v1/responses`, { model: "test-model" })).statusCode, 404);
+  assert.equal((await send(owner, "DELETE", `/admin/models/${id}`)).statusCode, 403);
+  assert.equal((await send(admin, "DELETE", `/admin/models/${id}`)).statusCode, 200);
+});
 
 test("canvas numbers are unique, immutable and allocated to copies and existing canvases", async (t) => {
   const { app, directory, send, admin, owner, member, projectId, save } = await fixture(t);

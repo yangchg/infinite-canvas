@@ -1,3 +1,4 @@
+import { workspaceHeaders } from "./workspace";
 import axios from "axios";
 
 import i18n from "@/i18n";
@@ -316,7 +317,7 @@ function aiApiUrl(config: AiConfig, path: string) {
 
 function aiHeaders(config: AiConfig, contentType?: string) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.baseUrl.startsWith("/api/model-gateway/") ? workspaceHeaders() : { Authorization: `Bearer ${config.apiKey}` }),
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
 }
@@ -337,9 +338,9 @@ function geminiApiUrl(config: Pick<AiConfig, "baseUrl" | "model">, action?: "gen
     return withLocalProxy(`${baseUrl}/models/${encodeURIComponent(geminiModelName(config.model))}:${action}`);
 }
 
-function geminiHeaders(config: Pick<AiConfig, "apiKey">) {
+function geminiHeaders(config: Pick<AiConfig, "apiKey" | "baseUrl">) {
     return {
-        "x-goog-api-key": config.apiKey,
+        ...(config.baseUrl.startsWith("/api/model-gateway/") ? workspaceHeaders() : { "x-goog-api-key": config.apiKey }),
         "Content-Type": "application/json",
     };
 }
@@ -868,7 +869,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
         }
         const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
             headers: {
-                Authorization: `Bearer ${config.apiKey}`,
+                ...(config.baseUrl.startsWith("/api/model-gateway/") ? workspaceHeaders() : { Authorization: `Bearer ${config.apiKey}` }),
             },
         });
         return (response.data.data || [])

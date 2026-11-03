@@ -25,6 +25,7 @@ export type ModelChannel = {
 };
 
 export type AiConfig = {
+    modelSource?: "local" | "server";
     channelMode: "remote" | "local";
     baseUrl: string;
     apiKey: string;
@@ -185,6 +186,10 @@ export function modelMatchesCapability(config: AiConfig, value: string, capabili
 }
 
 export function resolveModelForCapability(config: AiConfig, currentModel: string | undefined, capability: ModelCapability) {
+    if (config.modelSource === "server") {
+        if (currentModel && (!modelCapabilityOf(config, currentModel) || modelCapabilityOf(config, currentModel) === capability)) return currentModel;
+        return "";
+    }
     const defaultModel = capability === "image" ? config.imageModel : capability === "video" ? config.videoModel : capability === "audio" ? config.audioModel : config.textModel;
     const fallbackModel = capability === "image" ? defaultConfig.imageModel : capability === "video" ? defaultConfig.videoModel : capability === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     for (const model of [currentModel, defaultModel]) {
@@ -436,6 +441,7 @@ export function resolveModelChannel(config: AiConfig, value: string) {
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
+    if ((config.modelSource === "server" || value.startsWith("server-")) && !findChannelModel(config, value)) throw new Error("服务器模型不可用，请刷新清单并重新选择");
     const channel = resolveModelChannel(config, value);
     return {
         ...config,

@@ -1,3 +1,4 @@
+import { workspaceHeaders } from "./workspace";
 import axios from "axios";
 import { nanoid } from "nanoid";
 
@@ -38,7 +39,7 @@ function aiApiUrl(config: AiConfig, path: string) {
 
 function aiHeaders(config: AiConfig, contentType?: string) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.baseUrl.startsWith("/api/model-gateway/") ? workspaceHeaders() : { Authorization: `Bearer ${config.apiKey}` }),
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
 }
@@ -257,7 +258,7 @@ async function pollGeminiVideoTask(config: AiConfig, task: VideoGenerationTask, 
         if (!state.done) return { status: "pending" };
         const uri = state.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
         if (!uri) return { status: "failed", error: apiText("noPlayableVideo") };
-        const url = uri.includes("key=") ? uri : `${uri}${uri.includes("?") ? "&" : "?"}key=${config.apiKey}`;
+        const url = config.baseUrl.startsWith("/api/model-gateway/") || uri.includes("key=") ? uri : `${uri}${uri.includes("?") ? "&" : "?"}key=${config.apiKey}`;
         return { status: "completed", result: await videoResultFromUrl(url, options) };
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
@@ -284,8 +285,8 @@ function geminiOperationUrl(config: Pick<AiConfig, "baseUrl">, name: string) {
     return withLocalProxy(`${geminiVideoBaseUrl(config)}/${name.replace(/^\//, "")}`);
 }
 
-function geminiVideoHeaders(config: Pick<AiConfig, "apiKey">) {
-    return { "x-goog-api-key": config.apiKey, "Content-Type": "application/json" };
+function geminiVideoHeaders(config: Pick<AiConfig, "apiKey" | "baseUrl">) {
+    return { ...(config.baseUrl.startsWith("/api/model-gateway/") ? workspaceHeaders() : { "x-goog-api-key": config.apiKey }), "Content-Type": "application/json" };
 }
 
 function videoAspectRatio(size: string) {

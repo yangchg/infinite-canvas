@@ -3,6 +3,7 @@ import { App, Button, Form, Input, Modal, Select, Space, Switch, Table, Tabs } f
 import { useCanvasStore, type WorkspaceProject } from "@/stores/canvas/use-canvas-store";
 import type { SessionUser } from "@/stores/use-session-store";
 import { jsonBody, workspaceApi } from "@/services/api/workspace";
+import { ServerModelAdmin } from "./server-model-admin";
 
 type ManagedCanvas = { id: string; number: string; title: string; projectId: string; ownerId: string; ownerName: string; deleted: number; publishedId: string | null };
 export function WorkspaceAdmin({ onClose }: { onClose: () => void }) {
@@ -27,7 +28,8 @@ export function WorkspaceAdmin({ onClose }: { onClose: () => void }) {
     useEffect(() => { void act(async () => undefined); }, []);
     const patchProject = (id: string, patch: object) => workspaceApi(`/projects/${id}`, { method: "PATCH", body: jsonBody(patch) });
     return <Modal open title="项目与账号管理" width={1000} footer={null} onCancel={onClose}>
-        <Tabs items={[
+        <Tabs defaultActiveKey="projects" items={[
+            { key: "models", label: "服务器模型", children: <ServerModelAdmin /> },
             { key: "projects", label: "项目", children: <div className="space-y-4">
                 <Space.Compact block><Input placeholder="新项目名称" value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} /><Button disabled={!projectTitle.trim()} loading={busy} aria-label="创建项目" onClick={() => void act(async () => { await workspaceApi("/projects", { method: "POST", body: jsonBody({ title: projectTitle }) }); setProjectTitle(""); })}>创建项目</Button></Space.Compact>
                 <Table rowKey="id" dataSource={groups} pagination={false} columns={[

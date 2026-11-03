@@ -5,6 +5,8 @@ import type { CanvasNodeData } from "../src/types/canvas";
 // Config and i18n use browser storage during module initialization.
 const values = new Map<string, string>();
 const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+const originalSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: () => "test-account" } });
 Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     value: {
@@ -14,6 +16,8 @@ Object.defineProperty(globalThis, "localStorage", {
     },
 });
 afterAll(() => {
+    if (originalSession) Object.defineProperty(globalThis, "sessionStorage", originalSession);
+    else Reflect.deleteProperty(globalThis, "sessionStorage");
     if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
     else Reflect.deleteProperty(globalThis, "localStorage");
 });
@@ -21,6 +25,8 @@ afterAll(() => {
 const { defaultConfig, resolveModelForCapability, useConfigStore } = await import("../src/stores/use-config-store");
 const { buildGenerationConfig } = await import("../src/lib/canvas/canvas-generation-helpers");
 const { CanvasNodeType } = await import("../src/types/canvas");
+const { useServerModelStore, configForModelSource } = await import("../src/stores/use-server-model-store");
+const { resolveModelRequestConfig } = await import("../src/stores/use-config-store");
 
 const config: AiConfig = {
     ...defaultConfig,
@@ -97,4 +103,28 @@ test("unavailable explicit selections are preserved for every generation capabil
     for (const capability of ["image", "video", "text", "audio"] as ModelCapability[]) {
         expect(resolveModelForCapability(config, `removed::${capability}`, capability)).toBe(`removed::${capability}`);
     }
+});
+
+test("server selection uses the catalog without local credentials and local selection stays unchanged", () => {
+    useServerModelStore.setState({ models: [{ id: "team", name: "Team", model: "image-a", capability: "image", apiFormat: "openai" }] });
+    const node = { ...videoNode("server-team::image-a"), metadata: { modelSource: "server" as const, model: "server-team::image-a" } };
+    const selected = buildGenerationConfig(config, node, "image");
+    expect(ready(selected, selected.model)).toBe(true);
+    const request = resolveModelRequestConfig(selected, selected.model);
+    expect(request.baseUrl).toBe("/api/model-gateway/team");
+    expect(request.apiKey).not.toBe("test-key");
+    expect(request.model).toBe("image-a");
+    expect(configForModelSource(config, "local")).toBe(config);
+    expect(config.channels[0].apiKey).toBe("test-key");
+});
+
+test("server mode requires explicit selection and never falls back after removal", () => {
+    useServerModelStore.setState({ models: [] });
+    const empty = buildGenerationConfig(config, { ...videoNode(""), metadata: { modelSource: "server" } }, "image");
+    expect(empty.model).toBe("");
+    expect(ready(empty, empty.model)).toBe(false);
+    const removed = buildGenerationConfig(config, videoNode("server-removed::video-a"), "video");
+    expect(removed.model).toBe("server-removed::video-a");
+    expect(ready(removed, removed.model)).toBe(false);
+    expect(() => resolveModelRequestConfig(removed, removed.model)).toThrow("服务器模型不可用");
 });

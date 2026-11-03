@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { useEffect, type CSSProperties } from "react";
+import { configForModelSource, useServerModelStore } from "@/stores/use-server-model-store";
 import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
 import { Button, Segmented } from "antd";
 import { useTranslation } from "react-i18next";
@@ -29,10 +30,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const replacementId = node.metadata?.replacementOutputId || "";
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
+    const serverModels = useServerModelStore();
+    const source = node.metadata?.modelSource || (node.metadata?.model?.startsWith("server-") ? "server" : "local");
+    useEffect(() => { if (source === "server") void serverModels.load(); }, [source]);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode || "image";
-    const config = buildNodeConfig(globalConfig, node, mode);
+    const config = buildNodeConfig(configForModelSource(globalConfig, source, node.metadata?.model), node, mode);
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
@@ -41,7 +45,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const missingOutput = Boolean(selectedOutputId && !outputImages.some((image) => image.id === selectedOutputId));
 
     return (
-        <div className="flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+        <div className="flex h-full w-full cursor-move flex-col overflow-y-auto px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
             <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="shrink-0 text-sm font-semibold">{t("canvas.configNode.title")}</div>
                 <div className="cursor-default" onMouseDown={(event) => event.stopPropagation()}>
@@ -103,6 +107,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </button>
             </div>
 
+            <div className="mb-2 flex cursor-default items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
+                <Segmented size="small" disabled={isRunning} value={source} options={[{ label: "本地模型", value: "local" }, { label: "服务器模型", value: "server" }]} onChange={(value) => onConfigChange(node.id, { modelSource: value as "local" | "server", model: "" })} />
+                {source === "server" && <button type="button" disabled={serverModels.loading} onClick={() => void serverModels.load()}>{serverModels.loading ? "加载中…" : "刷新清单"}</button>}
+            </div>
+            {source === "server" && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>{serverModels.error || (!config.models.length && !serverModels.loading ? "暂无服务器模型，请联系管理员配置" : "")}</div>}
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_148px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
@@ -135,7 +144,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     type="primary"
                     className="!h-9 flex-1 !cursor-pointer !rounded-lg"
                     danger={isRunning}
-                    disabled={!isRunning && (!canGenerate || missingOutput)}
+                    disabled={!isRunning && (!canGenerate || missingOutput || (source === "server" && (serverModels.loading || !config.models.includes(config.model))))}
                     onMouseDown={(event) => event.stopPropagation()}
                     onClick={() => (isRunning ? onStop(node.id) : selectedOutputId ? onReplaceOutput(node.id, selectedOutputId) : onGenerate(node.id))}
                 >

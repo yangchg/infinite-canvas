@@ -2107,6 +2107,7 @@ function InfiniteCanvasPage() {
             if (!node.metadata?.content) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                if (generationConfig.modelSource === "server") { message.warning("服务器模型不可用，请刷新清单并重新选择"); return; }
                 openConfigDialog(true);
                 return;
             }
@@ -2434,6 +2435,7 @@ function InfiniteCanvasPage() {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                if (generationConfig.modelSource === "server") { message.warning("服务器模型不可用，请刷新清单并重新选择"); return; }
                 openConfigDialog(true);
                 return;
             }
@@ -2956,7 +2958,7 @@ function InfiniteCanvasPage() {
             const generationConfig =
                 hasSavedImageMetadata && savedImageMetadata
                     ? {
-                          ...effectiveConfig,
+                          ...buildGenerationConfig(effectiveConfig, node, "image"),
                           model: savedImageMetadata.model || effectiveConfig.imageModel || effectiveConfig.model,
                           quality: savedImageMetadata.quality || effectiveConfig.quality,
                           size: savedImageMetadata.size || effectiveConfig.size,
@@ -2965,6 +2967,7 @@ function InfiniteCanvasPage() {
                       }
                     : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                if (generationConfig.modelSource === "server") { message.warning("服务器模型不可用，请刷新清单并重新选择"); return; }
                 openConfigDialog(true);
                 return;
             }

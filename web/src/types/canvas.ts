@@ -62,6 +62,7 @@ export type CanvasNodeMetadata = {
     notifyCanceled?: boolean;
     generationType?: CanvasImageGenerationType;
     model?: string;
+    modelSource?: "local" | "server";
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";
     size?: string;
     quality?: string;

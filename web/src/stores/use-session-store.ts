@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { workspaceApi, setWorkspaceCsrf, jsonBody, WorkspaceError } from "@/services/api/workspace";
+import { useServerModelStore } from "./use-server-model-store";
 
 export type SessionUser = { id: string; username: string; displayName: string; admin: boolean; disabled: boolean };
 type Session = { user: SessionUser; csrf: string };
@@ -14,6 +15,7 @@ export const useSessionStore = create<{ user: SessionUser | null; ready: boolean
                 window.location.reload();
                 return;
             }
+            await useServerModelStore.getState().load();
             set({ user: session.user, ready: true, error: "" });
         } catch (error) {
             set({ user: null, ready: true, error: error instanceof WorkspaceError && error.status === 401 ? "" : String(error) });
