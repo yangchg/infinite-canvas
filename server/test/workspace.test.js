@@ -12,6 +12,71 @@ import { workspaceApi, setWorkspaceCsrf } from "../../web/src/services/api/works
 const origin = "http://localhost:3000";
 const blank = { nodes: [], connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } };
 
+test("RunningHub configuration requires admin and a key before enabling, keeps secrets private", async (t) => {
+  const { send, admin, owner } = await fixture(t);
+  const settings = { name: "RH", model: "2093181040868290562", capability: "image", apiFormat: "runninghub", baseUrl: "https://www.runninghub.cn", enabled: false,
+    runninghub: { promptNode: "5622", promptField: "value", imageNode: "5650", imageField: "image", outputNode: "5712" } };
+  assert.equal((await send(owner, "PUT", "/admin/models/new", settings)).statusCode, 403);
+  const saved = await send(admin, "PUT", "/admin/models/new", settings);
+  assert.equal(saved.statusCode, 200, saved.body);
+  const id = saved.json().id;
+  assert.deepEqual((await send(owner, "GET", "/models")).json(), []);
+  assert.equal((await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: true })).statusCode, 400);
+  assert.equal((await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: true, apiKey: "rh-secret" })).statusCode, 200);
+  assert.equal((await send(admin, "GET", "/admin/models")).body.includes("rh-secret"), false);
+  assert.equal((await send(owner, "GET", "/models")).body.includes("runninghub\":"), false);
+  const path = `/model-gateway/${id}/v1/images/edits`;
+  assert.equal((await send(owner, "POST", path, {}, { "x-csrf-token": "wrong" })).statusCode, 403);
+  assert.equal((await send(owner, "POST", path.replace("edits", "generations"), {})).statusCode, 400);
+  const form = new FormData(); form.set("model", "wrong");
+  const encoded = new Response(form);
+  assert.equal((await send(owner, "POST", path, Buffer.from(await encoded.arrayBuffer()), { "content-type": encoded.headers.get("content-type") })).statusCode, 400);
+});
+
+test("ComfyUI gateway maps inputs, hides workflow and rejects unsupported requests", async (t) => {
+  const { send, admin, owner } = await fixture(t);
+  let submitted;
+  let count = 0;
+  const upstream = createServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/prompt") {
+      count++;
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      submitted = JSON.parse(Buffer.concat(chunks));
+      res.end(JSON.stringify({ prompt_id: "task" }));
+    } else if (req.url === "/history/task") {
+      res.end(JSON.stringify({ task: { status: { completed: true }, outputs: { "9": { images: [{ filename: "result.png", type: "output" }] } } } }));
+    } else if (req.url.startsWith("/view?")) { res.end("image-bytes"); }
+    else { res.writeHead(404); res.end(); }
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const settings = { name: "Comfy", model: "workflow-test", capability: "image", apiFormat: "comfyui", baseUrl: `http://127.0.0.1:${upstream.address().port}`, enabled: true,
+    comfy: { promptNode: "67", sizeNode: "68", outputNode: "9", workflow: {
+      "67": { class_type: "CLIPTextEncode", inputs: { text: "original" } },
+      "68": { class_type: "EmptySD3LatentImage", inputs: { width: 1024, height: 1024, batch_size: 1 } },
+      "9": { class_type: "SaveImage", inputs: {} },
+    } } };
+  assert.equal((await send(owner, "PUT", "/admin/models/new", settings)).statusCode, 403);
+  const saved = await send(admin, "PUT", "/admin/models/new", settings);
+  assert.equal(saved.statusCode, 200, saved.body);
+  const id = saved.json().id;
+  assert.equal((await send(owner, "GET", "/models")).body.includes('"workflow"'), false);
+  const path = `/model-gateway/${id}/v1/images/generations`;
+  assert.equal((await send(owner, "POST", path, { model: settings.model, prompt: "test" }, { "x-csrf-token": "wrong" })).statusCode, 403);
+  assert.equal((await send(owner, "POST", path, { model: "wrong", prompt: "test" })).statusCode, 400);
+  assert.equal((await send(owner, "POST", path.replace("generations", "edits"), {})).statusCode, 400);
+  assert.equal(count, 0);
+  const result = await send(owner, "POST", path, { model: settings.model, prompt: "new prompt", size: "768x1024", n: 2 });
+  assert.equal(result.statusCode, 200, result.body);
+  assert.equal(Buffer.from(result.json().data[0].b64_json, "base64").toString(), "image-bytes");
+  assert.equal(submitted.prompt["67"].inputs.text, "new prompt");
+  assert.deepEqual(submitted.prompt["68"].inputs, { width: 768, height: 1024, batch_size: 2 });
+  assert.equal(count, 1);
+  const persisted = (await send(admin, "GET", "/admin/models")).json().find((m) => m.id === id);
+  assert.equal(persisted.comfy.workflow["67"].inputs.text, "original");
+});
+
 test("shared models protect credentials, proxy generation and isolate video tasks", async (t) => {
   const { send, admin, owner, member } = await fixture(t);
   const calls = [];

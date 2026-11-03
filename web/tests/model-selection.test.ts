@@ -128,3 +128,22 @@ test("server mode requires explicit selection and never falls back after removal
     expect(ready(removed, removed.model)).toBe(false);
     expect(() => resolveModelRequestConfig(removed, removed.model)).toThrow("服务器模型不可用");
 });
+
+test("RunningHub uses the server gateway and forces single-image generation", () => {
+    useServerModelStore.setState({ models: [{ id: "rh", name: "RH", model: "123", capability: "image", apiFormat: "runninghub" }] });
+    const selected = buildGenerationConfig(config, { ...videoNode("server-rh::123"), metadata: { modelSource: "server", model: "server-rh::123", count: 4 } }, "image");
+    const request = resolveModelRequestConfig(selected, selected.model);
+    expect(request.baseUrl).toBe("/api/model-gateway/rh");
+    expect(request.apiFormat).toBe("openai");
+    expect(selected.count).toBe("1");
+});
+
+test("ComfyUI uses the authenticated server gateway with the existing image client", () => {
+    useServerModelStore.setState({ models: [{ id: "comfy", name: "ComfyUI", model: "test", capability: "image", apiFormat: "comfyui" }] });
+    const selected = buildGenerationConfig(config, { ...videoNode("server-comfy::test"), metadata: { modelSource: "server", model: "server-comfy::test" } }, "image");
+    const request = resolveModelRequestConfig(selected, selected.model);
+    expect(request.baseUrl).toBe("/api/model-gateway/comfy");
+    expect(request.apiFormat).toBe("openai");
+    expect(request.model).toBe("test");
+    expect(config.channels[0].apiKey).toBe("test-key");
+});

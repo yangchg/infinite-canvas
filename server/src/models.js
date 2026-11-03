@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { z } from "zod";
+import { comfySchema, generateComfy } from "./comfyui.js";
+import { runningHubSchema, generateRunningHub } from "./runninghub.js";
 
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const schema = z.object({
   name: z.string().trim().min(1), model: z.string().trim().min(1),
-  capability: z.enum(["image", "text", "video", "audio"]), apiFormat: z.enum(["openai", "gemini"]),
+  capability: z.enum(["image", "text", "video", "audio"]), apiFormat: z.enum(["openai", "gemini", "comfyui", "runninghub"]),
+  runninghub: runningHubSchema.optional(),
+  comfy: comfySchema.optional(),
   baseUrl: z.url().refine((value) => { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; }),
   apiKey: z.string().trim().optional(), enabled: z.boolean(),
 });
@@ -28,7 +32,13 @@ export async function registerModels(app) {
     const values = schema.parse(request.body);
     const old = list().find((row) => row.id === request.params.id);
     const apiKey = values.apiKey || old?.apiKey;
-    if (!apiKey) fail(400, "请填写 API Key");
+    if (values.apiFormat === "comfyui") {
+      if (values.capability !== "image" || !values.comfy) fail(400, "ComfyUI 需配置图片工作流和输入输出节点");
+    } else if (values.apiFormat === "runninghub") {
+      if (values.capability !== "image" || !values.runninghub || !/^\d+$/.test(values.model)) fail(400, "请配置 RunningHub 图片工作流 ID 和节点映射");
+      if (values.baseUrl.replace(/\/+$/, "") !== "https://www.runninghub.cn") fail(400, "RunningHub 地址请填写 https://www.runninghub.cn");
+      if (values.enabled && !apiKey) fail(400, "启用 RunningHub 前请填写 API Key");
+    } else if (!apiKey) fail(400, "请填写 API Key");
     const id = old?.id || randomUUID();
     db.prepare("INSERT INTO shared_models(id,config) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config").run(id, JSON.stringify({ ...values, apiKey }));
     return { id };
@@ -45,6 +55,43 @@ export async function registerModels(app) {
       const config = list().find((row) => row.id === request.params.id && row.enabled);
       if (!config) fail(404, "服务器模型已停用或删除，请重新选择");
       const path = request.params["*"];
+      if (config.apiFormat === "runninghub") {
+        if (request.method !== "POST" || path !== "v1/images/edits") fail(400, "草稿细化需要参考图片，请连接 1 张图片后生成");
+        let form;
+        try { form = await new Response(request.body, { headers: { "Content-Type": request.headers["content-type"] || "" } }).formData(); }
+        catch { fail(400, "请使用图片表单提交草稿细化请求"); }
+        if (form.get("model") !== config.model) fail(400, "模型与配置不一致");
+        const controller = new AbortController();
+        const timeout = AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS || 300_000));
+        const abort = () => { if (!reply.raw.writableEnded) controller.abort(); };
+        let taskId;
+        reply.raw.once("close", abort);
+        try {
+          return await generateRunningHub(config, form, AbortSignal.any([controller.signal, timeout]), (id) => {
+            taskId = id;
+            db.prepare("INSERT OR IGNORE INTO model_jobs(modelId,jobId,userId) VALUES(?,?,?)").run(config.id, id, request.user.id);
+          });
+        } catch (error) {
+          if (error.statusCode) throw error;
+          fail(timeout.aborted ? 504 : 502, `RunningHub ${timeout.aborted ? "等待超时" : "连接中断或返回异常"}；${taskId ? `任务 ${taskId}` : "任务可能已提交"}可能仍运行并计费，请先查看平台任务记录，避免重复提交`);
+        } finally { reply.raw.removeListener("close", abort); }
+      }
+      if (config.apiFormat === "comfyui") {
+        if (request.method !== "POST" || path !== "v1/images/generations") fail(400, "此 ComfyUI 工作流仅支持文生图，不支持参考图或其他生成类型");
+        let input;
+        try { input = JSON.parse(request.body.toString()); } catch { fail(400, "请求格式不正确"); }
+        if (input?.model !== config.model) fail(400, "模型与配置不一致");
+        const controller = new AbortController();
+        const timeout = AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS || 300_000));
+        const abort = () => { if (!reply.raw.writableEnded) controller.abort(); };
+        reply.raw.once("close", abort);
+        try { return await generateComfy(config, input, AbortSignal.any([controller.signal, timeout])); }
+        catch (error) {
+          if (timeout.aborted) fail(504, "ComfyUI 等待超时，任务可能仍在执行，请先查看 ComfyUI 记录，避免重复提交");
+          if (error.statusCode) throw error;
+          fail(502, "ComfyUI 连接中断或返回异常；任务可能已提交，请先查看 ComfyUI 记录");
+        } finally { reply.raw.removeListener("close", abort); }
+      }
       const gemini = config.apiFormat === "gemini";
       const version = gemini ? "v1beta" : "v1";
       const base = config.baseUrl.replace(/\/+$/, "").replace(/\/v1(?:beta)?$/, "");

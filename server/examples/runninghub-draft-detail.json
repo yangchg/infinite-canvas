@@ -1,0 +1,15 @@
+{
+  "name": "RunningHub · 草稿细化",
+  "apiFormat": "runninghub",
+  "baseUrl": "https://www.runninghub.cn",
+  "model": "2093181040868290562",
+  "capability": "image",
+  "enabled": false,
+  "runninghub": {
+    "promptNode": "5622",
+    "promptField": "value",
+    "imageNode": "5650",
+    "imageField": "image",
+    "outputNode": "5712"
+  }
+}

@@ -37,6 +37,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode || "image";
     const config = buildNodeConfig(configForModelSource(globalConfig, source, node.metadata?.model), node, mode);
+    const isRunningHubModel = (model: string) => source === "server" && serverModels.models.some((item) => item.apiFormat === "runninghub" && model === `server-${item.id}::${item.model}`);
+    const isRunningHub = isRunningHubModel(config.model);
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
@@ -113,9 +115,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
             </div>
             {source === "server" && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>{serverModels.error || (!config.models.length && !serverModels.loading ? "暂无服务器模型，请联系管理员配置" : "")}</div>}
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_148px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
-                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
+                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, ...(isRunningHubModel(model) ? { count: 1 } : {}) })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
                     <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                ) : mode === "image" && isRunningHub ? (
+                    <span className="text-xs">工作流尺寸 · 1 张</span>
                 ) : mode === "image" ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
@@ -125,6 +129,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 )}
             </div>
 
+            {isRunningHub && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>连接 1 张草稿图片，并通过文本节点或「组装提示词」输入描述。图片将上传 RunningHub，使用服务器账号计费。</div>}
             <div className="mt-auto flex min-w-0 items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 {mode === "image" && (outputImages.length > 0 || replacementId) && (
                     <select
