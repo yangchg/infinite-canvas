@@ -1,13 +1,16 @@
 import { CanvasSaveStatus } from "./canvas-save-status";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
-import { Button, Dropdown, Modal, Tooltip } from "antd";
+import { App, Button, Dropdown, Modal, Select, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useParams } from "react-router-dom";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { canvasCategoryOptions, type CanvasCategory } from "@/lib/canvas/canvas-category";
 import { DOCS_URL } from "@/constant/env";
 
 export function CanvasTopBar({
@@ -55,6 +58,14 @@ export function CanvasTopBar({
     compactAgentStatus: { connected: boolean; enabled: boolean; activity: string };
     onToggleAgent: () => void;
 }) {
+    const { id } = useParams();
+    const { projects, groups, updateProject, flush } = useCanvasStore();
+    const project = projects.find((item) => item.id === id);
+    const group = groups.find((item) => item.id === project?.projectId);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [category, setCategory] = useState<CanvasCategory>("通用");
+    const [savingSettings, setSavingSettings] = useState(false);
+    const { message } = App.useApp();
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
     const theme = canvasThemes[colorTheme];
@@ -95,6 +106,7 @@ export function CanvasTopBar({
                                 { key: "docs", icon: <BookOpen className="size-4" />, label: t("canvas.docs"), onClick: () => window.open(DOCS_URL, "_blank", "noopener,noreferrer") },
                                 { key: "projects", icon: <Images className="size-4" />, label: t("canvas.projects"), onClick: onProjects },
                                 { type: "divider" },
+                                { key: "settings", label: "画布设置", disabled: !project || !group || Boolean(group.archived || group.deleted), onClick: () => { setCategory(project?.category || "通用"); setSettingsOpen(true); } },
                                 { key: "new", icon: <Plus className="size-4" />, label: t("canvas.create"), onClick: onCreateProject },
                                 { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteCurrent"), onClick: onDeleteProject },
                                 { type: "divider" },
@@ -154,6 +166,16 @@ export function CanvasTopBar({
                     </Button>
                 </div>
             </div>
+            <Modal title="画布设置" open={settingsOpen} confirmLoading={savingSettings} onCancel={() => setSettingsOpen(false)} onOk={async () => {
+                if (!project || !group || group.archived || group.deleted) return;
+                setSavingSettings(true);
+                try { updateProject(project.id, { category }); await flush(); setSettingsOpen(false); }
+                catch (error) { message.error(String(error)); }
+                finally { setSavingSettings(false); }
+            }}>
+                <label className="block py-3">分类<Select aria-label="画布分类" className="w-full" value={category} onChange={setCategory} options={canvasCategoryOptions} /></label>
+                {project?.publishedId && <p>重新发布后更新公共画布分类。</p>}
+            </Modal>
             <Modal title={t("canvas.shortcuts")} open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
                 <div className="space-y-2 border-t pt-4 text-sm" style={{ borderColor: theme.node.stroke }}>
                     <Shortcut keys={["Ctrl / Space", t("canvas.shortcut.drag")]} value={t("canvas.shortcut.toggleTool")} />

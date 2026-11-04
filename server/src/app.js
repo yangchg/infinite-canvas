@@ -9,7 +9,7 @@ import { writeFile, unlink, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { database, transaction } from "./database.js";
 import { digest, hashPassword, verifyPassword } from "./password.js";
-import { contentSchema, cleanContent, fileKeys, publishContent } from "./content.js";
+import { categorySchema, contentSchema, cleanContent, fileKeys, publishContent } from "./content.js";
 import { registerModels } from "./models.js";
 
 const name = z.string().trim().min(1);
@@ -50,7 +50,7 @@ export async function createApp(options = {}) {
     return row;
   };
   const canvasNumber = (id) => `HB-${String(get("SELECT number FROM canvas_numbers WHERE canvasId=?", id).number).padStart(6, "0")}`;
-  const serialize = (row) => ({ ...JSON.parse(row.content), id: row.id, number: canvasNumber(row.id), projectId: row.projectId, ownerId: row.ownerId,
+  const serialize = (row) => ({ category: "通用", ...JSON.parse(row.content), id: row.id, number: canvasNumber(row.id), projectId: row.projectId, ownerId: row.ownerId,
     ownerName: get("SELECT displayName FROM users WHERE id=?", row.ownerId).displayName,
     title: row.title, revision: row.revision, publishedId: row.publishedId, deleted: Boolean(row.deleted),
     sourceId: row.sourceId, sourceVersion: row.sourceVersion, kind: row.kind, createdAt: row.createdAt, updatedAt: row.updatedAt });
@@ -200,8 +200,11 @@ export async function createApp(options = {}) {
     AND (?=1 OR EXISTS(SELECT 1 FROM members m WHERE m.projectId=p.id AND m.userId=?)) ORDER BY c.updatedAt DESC`, request.user.id, request.user.admin, request.user.id).map(serialize));
   app.get("/api/projects/:id/public", async (request) => {
     member(request.user, request.params.id);
-    return all(`SELECT c.id,c.projectId,c.ownerId,u.displayName AS ownerName,v.title,v.id AS publishedId,v.createdAt AS updatedAt
-      FROM canvases c JOIN versions v ON v.id=c.publishedId JOIN users u ON u.id=c.ownerId WHERE c.projectId=? AND c.deleted=0`, request.params.id).map((row) => ({ ...row, number: canvasNumber(row.id) }));
+    const category = categorySchema.optional().parse(request.query.category);
+    return all(`SELECT c.id,c.projectId,c.ownerId,u.displayName AS ownerName,v.title,v.id AS publishedId,v.createdAt AS updatedAt,
+      COALESCE(json_extract(v.content, '$.category'), '通用') AS category
+      FROM canvases c JOIN versions v ON v.id=c.publishedId JOIN users u ON u.id=c.ownerId WHERE c.projectId=? AND c.deleted=0
+      AND (? IS NULL OR COALESCE(json_extract(v.content, '$.category'), '通用')=?)`, request.params.id, category ?? null, category ?? null).map((row) => ({ ...row, number: canvasNumber(row.id) }));
   });
   app.get("/api/canvases/:id/public", async (request) => {
     const row = canvas(request.user, request.params.id);

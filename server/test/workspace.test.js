@@ -333,3 +333,32 @@ test("credential fields are rejected on publication and database backup can be r
     assert.equal(response.json().title, "safe");
   } finally { await second.close(); }
 });
+
+test("canvas categories follow published snapshots, defaults, copies and membership", async (t) => {
+  const { app, send, owner, member, stranger, projectId, save } = await fixture(t);
+  assert.equal((await save(owner, "legacy")).statusCode, 200);
+  // Simulate an existing canvas saved before categories were introduced.
+  app.db.prepare("UPDATE canvases SET content=? WHERE id=?").run(JSON.stringify(blank), "legacy");
+  assert.equal((await send(owner, "GET", "/canvases")).json()[0].category, "通用");
+  await send(owner, "POST", "/canvases/legacy/publish", { revision: 1 });
+  assert.equal((await save(owner, "character", 0, { ...blank, category: "角色原画" })).statusCode, 200);
+  await send(owner, "POST", "/canvases/character/publish", { revision: 1 });
+  const list = (user, category) => send(user, "GET", `/projects/${projectId}/public${category ? `?category=${encodeURIComponent(category)}` : ""}`);
+  assert.equal((await list(member)).json().length, 2);
+  assert.deepEqual((await list(member, "通用")).json().map((row) => row.id), ["legacy"]);
+  assert.deepEqual((await list(member, "角色原画")).json().map((row) => row.id), ["character"]);
+  assert.equal((await list(stranger, "角色原画")).statusCode, 403);
+  assert.equal((await list(member, "invalid")).statusCode, 400);
+  assert.equal((await save(owner, "bad", 0, { ...blank, category: "invalid" })).statusCode, 400);
+  await save(owner, "character", 1, { ...blank, category: "UI" });
+  assert.equal((await send(member, "GET", "/canvases/character/public")).json().category, "角色原画");
+  assert.equal((await list(member, "UI")).json().length, 0);
+  for (const kind of ["canvas", "usage"]) {
+    const copied = await send(member, "POST", "/canvases/character/use", { kind });
+    assert.equal(copied.statusCode, 200, copied.body);
+    assert.equal(copied.json().category, "角色原画");
+  }
+  await send(owner, "POST", "/canvases/character/publish", { revision: 2 });
+  assert.equal((await list(member, "角色原画")).json().length, 0);
+  assert.deepEqual((await list(member, "UI")).json().map((row) => row.id), ["character"]);
+});

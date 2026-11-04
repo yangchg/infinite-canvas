@@ -5,7 +5,10 @@ import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, Viewport
 import { workspaceApi, jsonBody, setWorkspaceCsrf } from "@/services/api/workspace";
 import { useSessionStore } from "@/stores/use-session-store";
 
+import { canvasCategories, type CanvasCategory } from "@/lib/canvas/canvas-category";
+
 export type CanvasProject = {
+    category?: CanvasCategory;
     id: string;
     number?: string;
     projectId?: string;
@@ -42,7 +45,7 @@ type CanvasStore = {
     load: () => Promise<void>;
     selectGroup: (id: string) => void;
     flush: () => Promise<void>;
-    createProject: (title?: string) => string;
+    createProject: (title?: string, category?: CanvasCategory) => string;
     importProject: (project: Partial<CanvasProject>) => string;
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
@@ -105,7 +108,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         })().finally(() => { draining = undefined; });
         return draining;
     },
-    createProject: (title = "未命名画布") => get().importProject({ title }),
+    createProject: (title = "未命名画布", category = "通用") => get().importProject({ title, category }),
     importProject: (source) => {
         const projectId = get().selectedGroupId;
         const group = get().groups.find((item) => item.id === projectId && !item.archived && !item.deleted);
@@ -113,6 +116,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         const now = new Date().toISOString();
         const project: CanvasProject = {
             id: nanoid(), projectId, ownerId: useSessionStore.getState().user?.id, ownerName: useSessionStore.getState().user?.displayName,
+            category: canvasCategories.includes(source.category!) ? source.category : "通用",
             revision: 0, kind: "canvas", title: source.title || "未命名画布", createdAt: now, updatedAt: now,
             nodes: source.nodes || [], connections: source.connections || [], chatSessions: source.chatSessions || [], activeChatId: source.activeChatId || null,
             backgroundMode: source.backgroundMode || "lines", showImageInfo: source.showImageInfo || false, viewport: source.viewport || { x: 0, y: 0, k: 1 },

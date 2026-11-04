@@ -1,3 +1,4 @@
+import { canvasCategoryOptions, type CanvasCategory } from "@/lib/canvas/canvas-category";
 import { nanoid } from "nanoid";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -12,7 +13,7 @@ import { setMediaBlob } from "@/services/file-storage";
 import type { CanvasExportFile } from "@/types/canvas-export";
 import { WorkspaceAdmin } from "./workspace-admin";
 
-type PublicCanvas = Pick<CanvasProject, "id" | "number" | "title" | "ownerName" | "ownerId" | "publishedId" | "updatedAt">;
+type PublicCanvas = Pick<CanvasProject, "category" | "id" | "number" | "title" | "ownerName" | "ownerId" | "publishedId" | "updatedAt">;
 export default function CanvasPage() {
     const store = useCanvasStore();
     const user = useSessionStore((state) => state.user)!;
@@ -24,26 +25,30 @@ export default function CanvasPage() {
     const [busy, setBusy] = useState(false);
     const [adminOpen, setAdminOpen] = useState(false);
     const [rename, setRename] = useState<CanvasProject | null>(null);
+    const [creating, setCreating] = useState(false);
+    const [category, setCategory] = useState<CanvasCategory>("通用");
+    const [publicCategory, setPublicCategory] = useState("");
+    const createdId = useRef<string | null>(null);
     const [title, setTitle] = useState("");
     const input = useRef<HTMLInputElement>(null);
     const group = store.groups.find((item) => item.id === store.selectedGroupId);
     const writable = Boolean(group && !group.archived && !group.deleted);
     const refreshPublic = async () => {
         if (!store.selectedGroupId || group?.deleted) { setPublicItems([]); return; }
-        setPublicItems(await workspaceApi<PublicCanvas[]>(`/projects/${store.selectedGroupId}/public`));
+        setPublicItems(await workspaceApi<PublicCanvas[]>(`/projects/${store.selectedGroupId}/public${publicCategory ? `?category=${encodeURIComponent(publicCategory)}` : ""}`));
     };
     useEffect(() => {
         let current = true;
         setPublicItems([]);
-        if (store.selectedGroupId && !group?.deleted) void workspaceApi<PublicCanvas[]>(`/projects/${store.selectedGroupId}/public`).then((items) => { if (current) setPublicItems(items); }).catch((error) => { if (current) message.error(String(error)); });
+        if (store.selectedGroupId && !group?.deleted) void workspaceApi<PublicCanvas[]>(`/projects/${store.selectedGroupId}/public${publicCategory ? `?category=${encodeURIComponent(publicCategory)}` : ""}`).then((items) => { if (current) setPublicItems(items); }).catch((error) => { if (current) message.error(String(error)); });
         return () => { current = false; };
-    }, [store.selectedGroupId, group?.deleted, message]);
+    }, [store.selectedGroupId, group?.deleted, publicCategory, message]);
     const act = async (action: () => Promise<unknown>) => {
         setBusy(true);
         try { await action(); } catch (error) { message.error(String(error)); } finally { setBusy(false); }
     };
     const open = (id: string) => navigate(`/canvas/${id}${search.toString() ? `?${search}` : ""}${window.location.hash}`);
-    const create = () => { try { open(store.createProject()); } catch (error) { message.error(String(error)); } };
+    const create = () => { createdId.current = null; setTitle("未命名画布"); setCategory("通用"); setCreating(true); };
     useEffect(() => {
         const mode = search.get("mode");
         if (!writable || !["new", "recent"].includes(mode || "")) return;
@@ -107,9 +112,10 @@ export default function CanvasPage() {
             {!group ? <Empty description={user.admin ? "请先创建项目" : "暂无可访问项目，请联系管理员添加成员"} /> : <>
                 {Boolean(group.archived) && <Alert title="项目已归档，仅可查看和导出；恢复项目后可以继续编辑。" type="info" />}
                 <Tabs activeKey={tab} onChange={setTab} items={[{ key: "mine", label: "我的画布" }, { key: "public", label: "公共画布" }, { key: "usage", label: "我的使用记录" }, { key: "trash", label: "回收站" }]} />
+                {tab === "public" && <Select aria-label="筛选画布分类" style={{ minWidth: 180 }} value={publicCategory} onChange={setPublicCategory} options={[{ value: "", label: "全部分类" }, ...canvasCategoryOptions]} />}
                 {tab === "public" ? <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {publicItems.map((item) => <article key={item.id} className="space-y-3 rounded-xl border border-current/10 p-5">
-                        <h2 className="text-lg font-medium">{item.title}</h2><p className="select-text font-mono text-xs">编号：{item.number}</p><p>所有者：{item.ownerName}</p><p className="text-xs">发布于 {new Date(item.updatedAt).toLocaleString()}</p>
+                        <h2 className="text-lg font-medium">{item.title}</h2><Tag>{item.category || "通用"}</Tag><p className="select-text font-mono text-xs">编号：{item.number}</p><p>所有者：{item.ownerName}</p><p className="text-xs">发布于 {new Date(item.updatedAt).toLocaleString()}</p>
                         <Space wrap><Button onClick={() => navigate(`/canvas/public/${item.id}`)}>查看</Button><Button disabled={!writable || busy} onClick={() => void usePublic(item, "usage")}>使用</Button><Button disabled={!writable || busy} onClick={() => void usePublic(item, "canvas")}>复制到我的画布</Button>
                             {(user.admin || item.ownerId === user.id) && <Button disabled={!writable || busy} onClick={() => void act(async () => { await workspaceApi(`/canvases/${item.id}/publish`, { method: "DELETE" }); await store.load(); await refreshPublic(); })}>取消发布</Button>}
                         </Space>
@@ -117,14 +123,14 @@ export default function CanvasPage() {
                     {!publicItems.length && <Empty description="暂无公共画布" />}
                 </div> : <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {items.map((item) => <article key={item.id} className="space-y-3 rounded-xl border border-current/10 p-5">
-                        <h2 className="text-lg font-medium">{item.title}</h2>
+                        <h2 className="text-lg font-medium">{item.title}</h2><Tag>{item.category || "通用"}</Tag>
                         <p className="select-text font-mono text-xs">编号：{item.number || "保存后分配"}</p>
                         <p><Tag>{item.kind === "usage" ? "个人使用记录" : item.publishedId ? "已发布" : "私有"}</Tag>所有者：{item.ownerName}</p>
                         {item.sourceVersion && <p className="text-xs break-all">来源版本：{item.sourceVersion}</p>}
                         <Space wrap>
                             {item.deleted ? <Button disabled={!writable || busy} onClick={() => void act(async () => { await workspaceApi(`/canvases/${item.id}/lifecycle`, { method: "PATCH", body: jsonBody({ deleted: false }) }); await store.load(); })}>恢复为私有画布</Button> : <>
                                 <Button onClick={() => open(item.id)}>{group.archived ? "查看" : item.kind === "usage" ? "继续使用" : "打开"}</Button>
-                                <Button disabled={!writable} onClick={() => { setRename(item); setTitle(item.title); }}>重命名</Button>
+                                <Button disabled={!writable} onClick={() => { setRename(item); setTitle(item.title); setCategory(item.category || "通用"); }}>画布设置</Button>
                                 {item.kind !== "usage" && <Button disabled={!writable || busy} onClick={() => publish(item)}>{item.publishedId ? "更新发布" : "发布"}</Button>}
                                 <Button danger disabled={!writable || busy} onClick={() => modal.confirm({ title: "移入回收站？", content: "同时取消该画布的公共发布。", onOk: async () => { await store.deleteProjects([item.id]); await refreshPublic(); } })}>删除</Button>
                             </>}
@@ -135,7 +141,24 @@ export default function CanvasPage() {
                 </div>}
             </>}
         </div>
-        <Modal open={Boolean(rename)} title="重命名画布" onCancel={() => setRename(null)} onOk={() => void act(async () => { if (rename && title.trim()) { store.renameProject(rename.id, title); await store.flush(); setRename(null); } })}><Input value={title} onChange={(event) => setTitle(event.target.value)} /></Modal>
+        <Modal open={creating || Boolean(rename)} title={creating ? "创建画布" : "画布设置"} okText={creating ? "创建" : "保存"} cancelText="取消" confirmLoading={busy} closable={!busy} maskClosable={!busy} cancelButtonProps={{ disabled: busy }} okButtonProps={{ disabled: !writable || !title.trim() }} onCancel={() => { setCreating(false); setRename(null); }} onOk={() => void act(async () => {
+            if (!writable || !title.trim()) return;
+            if (creating) {
+                const id = createdId.current || store.createProject(title.trim(), category);
+                createdId.current = id;
+                store.updateProject(id, { title: title.trim(), category });
+                await store.flush(); setCreating(false); open(id);
+            } else if (rename) {
+                store.updateProject(rename.id, { title: title.trim(), category });
+                await store.flush(); setRename(null);
+            }
+        })}>
+            <div className="space-y-4 py-3">
+                <label className="block">画布名称<Input aria-label="画布名称" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+                <label className="block">分类<Select aria-label="画布分类" className="w-full" value={category} onChange={setCategory} options={canvasCategoryOptions} /></label>
+                {rename?.publishedId && <p className="text-sm">修改分类后，重新发布才会更新公共画布。</p>}
+            </div>
+        </Modal>
         {adminOpen && <WorkspaceAdmin onClose={() => setAdminOpen(false)} />}
     </main>;
 }

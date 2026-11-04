@@ -1,6 +1,9 @@
 import { z } from "zod";
 
+export const categorySchema = z.enum(["通用", "场景原画", "角色原画", "UI", "3D场景", "3D角色", "特效", "动作"]);
+
 export const contentSchema = z.object({
+  category: categorySchema.default("通用"),
   nodes: z.array(z.object({ id: z.string(), type: z.string(), title: z.string(), position: z.object({ x: z.number(), y: z.number() }), width: z.number(), height: z.number(), metadata: z.record(z.string(), z.unknown()).optional() })),
   connections: z.array(z.object({ id: z.string(), fromNodeId: z.string(), toNodeId: z.string() })),
   chatSessions: z.array(z.unknown()).default([]), activeChatId: z.string().nullable().default(null),
