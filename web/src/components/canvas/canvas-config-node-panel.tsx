@@ -129,7 +129,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 )}
             </div>
 
-            {isRunningHub && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>连接 1 张草稿图片，并通过文本节点或「组装提示词」输入描述。图片将上传 RunningHub，使用服务器账号计费。</div>}
+            {isRunningHub && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>需要 1 张参考图。切换模型保留原提示词；若使用「组装提示词」，须输入 @ 并选中已连接的图片。修改后点击「开始生成」，旧结果的「重试」沿用原参数。图片将上传 RunningHub，使用服务器账号计费。</div>}
             <div className="mt-auto flex min-w-0 items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 {mode === "image" && (outputImages.length > 0 || replacementId) && (
                     <select

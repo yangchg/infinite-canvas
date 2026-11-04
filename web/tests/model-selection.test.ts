@@ -25,8 +25,24 @@ afterAll(() => {
 const { defaultConfig, resolveModelForCapability, useConfigStore } = await import("../src/stores/use-config-store");
 const { buildGenerationConfig } = await import("../src/lib/canvas/canvas-generation-helpers");
 const { CanvasNodeType } = await import("../src/types/canvas");
-const { useServerModelStore, configForModelSource } = await import("../src/stores/use-server-model-store");
+const { useServerModelStore, configForModelSource, validateServerImageInputs } = await import("../src/stores/use-server-model-store");
 const { resolveModelRequestConfig } = await import("../src/stores/use-config-store");
+
+test("switching image models validates current reference requirements without stale model state", () => {
+    useServerModelStore.setState({ models: [
+        { id: "rh", name: "RH", model: "123", capability: "image", apiFormat: "runninghub" },
+        { id: "comfy", name: "Comfy", model: "test", capability: "image", apiFormat: "comfyui" },
+    ] });
+    const selected = { ...defaultConfig, modelSource: "server" as const, model: "server-comfy::test" };
+    expect(() => validateServerImageInputs(selected, 0)).not.toThrow();
+    selected.model = "server-rh::123";
+    expect(() => validateServerImageInputs(selected, 0)).toThrow("输入 @");
+    expect(() => validateServerImageInputs(selected, 1)).not.toThrow();
+    expect(() => validateServerImageInputs(selected, 2)).toThrow("仅支持 1 张");
+    selected.model = "server-comfy::test";
+    expect(() => validateServerImageInputs(selected, 1)).toThrow("仅支持文生图");
+    expect(() => validateServerImageInputs(selected, 0)).not.toThrow();
+});
 
 const config: AiConfig = {
     ...defaultConfig,
