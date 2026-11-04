@@ -1,3 +1,4 @@
+import { markCanvasSubmission } from "./canvas-usage";
 import { workspaceHeaders } from "./workspace";
 import axios from "axios";
 import { nanoid } from "nanoid";
@@ -97,6 +98,7 @@ async function createPluginVideoTask(config: AiConfig, model: string, script: st
     const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
+    markCanvasSubmission(options?.signal);
     const result = videoPluginResult(
         await runModelPlugin({
             capability: "video",

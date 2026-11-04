@@ -9,6 +9,7 @@ import { canvasCategories, type CanvasCategory } from "@/lib/canvas/canvas-categ
 
 export type CanvasProject = {
     category?: CanvasCategory;
+    description?: string;
     id: string;
     number?: string;
     projectId?: string;
@@ -117,6 +118,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         const project: CanvasProject = {
             id: nanoid(), projectId, ownerId: useSessionStore.getState().user?.id, ownerName: useSessionStore.getState().user?.displayName,
             category: canvasCategories.includes(source.category!) ? source.category : "通用",
+            description: typeof source.description === "string" ? source.description : "",
             revision: 0, kind: "canvas", title: source.title || "未命名画布", createdAt: now, updatedAt: now,
             nodes: source.nodes || [], connections: source.connections || [], chatSessions: source.chatSessions || [], activeChatId: source.activeChatId || null,
             backgroundMode: source.backgroundMode || "lines", showImageInfo: source.showImageInfo || false, viewport: source.viewport || { x: 0, y: 0, k: 1 },

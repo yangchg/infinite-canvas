@@ -2,7 +2,7 @@ import { canvasCategoryOptions, type CanvasCategory } from "@/lib/canvas/canvas-
 import { nanoid } from "nanoid";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Alert, App, Button, Empty, Input, Modal, Select, Space, Tabs, Tag } from "antd";
+import { Alert, App, Button, Empty, Input, Modal, Popover, Select, Space, Tabs, Tag, Typography } from "antd";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useSessionStore } from "@/stores/use-session-store";
 import { jsonBody, workspaceApi } from "@/services/api/workspace";
@@ -13,9 +13,10 @@ import { setMediaBlob } from "@/services/file-storage";
 import type { CanvasExportFile } from "@/types/canvas-export";
 import { WorkspaceAdmin } from "./workspace-admin";
 
-type PublicCanvas = Pick<CanvasProject, "category" | "id" | "number" | "title" | "ownerName" | "ownerId" | "publishedId" | "updatedAt">;
+type PublicCanvas = Pick<CanvasProject, "description" | "category" | "id" | "number" | "title" | "ownerName" | "ownerId" | "publishedId" | "updatedAt"> & { usageCount: number; hasRunningHub: boolean };
 export default function CanvasPage() {
     const store = useCanvasStore();
+    const [descriptionPopover, setDescriptionPopover] = useState<string | null>(null);
     const user = useSessionStore((state) => state.user)!;
     const { message, modal } = App.useApp();
     const navigate = useNavigate();
@@ -30,6 +31,7 @@ export default function CanvasPage() {
     const [publicCategory, setPublicCategory] = useState("");
     const createdId = useRef<string | null>(null);
     const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
     const input = useRef<HTMLInputElement>(null);
     const group = store.groups.find((item) => item.id === store.selectedGroupId);
     const writable = Boolean(group && !group.archived && !group.deleted);
@@ -48,7 +50,7 @@ export default function CanvasPage() {
         try { await action(); } catch (error) { message.error(String(error)); } finally { setBusy(false); }
     };
     const open = (id: string) => navigate(`/canvas/${id}${search.toString() ? `?${search}` : ""}${window.location.hash}`);
-    const create = () => { createdId.current = null; setTitle("未命名画布"); setCategory("通用"); setCreating(true); };
+    const create = () => { createdId.current = null; setTitle("未命名画布"); setDescription(""); setCategory("通用"); setCreating(true); };
     useEffect(() => {
         const mode = search.get("mode");
         if (!writable || !["new", "recent"].includes(mode || "")) return;
@@ -112,25 +114,40 @@ export default function CanvasPage() {
             {!group ? <Empty description={user.admin ? "请先创建项目" : "暂无可访问项目，请联系管理员添加成员"} /> : <>
                 {Boolean(group.archived) && <Alert title="项目已归档，仅可查看和导出；恢复项目后可以继续编辑。" type="info" />}
                 <Tabs activeKey={tab} onChange={setTab} items={[{ key: "mine", label: "我的画布" }, { key: "public", label: "公共画布" }, { key: "usage", label: "我的使用记录" }, { key: "trash", label: "回收站" }]} />
-                {tab === "public" && <Select aria-label="筛选画布分类" style={{ minWidth: 180 }} value={publicCategory} onChange={setPublicCategory} options={[{ value: "", label: "全部分类" }, ...canvasCategoryOptions]} />}
-                {tab === "public" ? <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {publicItems.map((item) => <article key={item.id} className="space-y-3 rounded-xl border border-current/10 p-5">
-                        <h2 className="text-lg font-medium">{item.title}</h2><Tag>{item.category || "通用"}</Tag><p className="select-text font-mono text-xs">编号：{item.number}</p><p>所有者：{item.ownerName}</p><p className="text-xs">发布于 {new Date(item.updatedAt).toLocaleString()}</p>
-                        <Space wrap><Button onClick={() => navigate(`/canvas/public/${item.id}`)}>查看</Button><Button disabled={!writable || busy} onClick={() => void usePublic(item, "usage")}>使用</Button><Button disabled={!writable || busy} onClick={() => void usePublic(item, "canvas")}>复制到我的画布</Button>
-                            {(user.admin || item.ownerId === user.id) && <Button disabled={!writable || busy} onClick={() => void act(async () => { await workspaceApi(`/canvases/${item.id}/publish`, { method: "DELETE" }); await store.load(); await refreshPublic(); })}>取消发布</Button>}
+                {tab === "public" && <div className="pb-4"><Select aria-label="筛选画布分类" style={{ minWidth: 180 }} value={publicCategory} onChange={setPublicCategory} options={[{ value: "", label: "全部分类" }, ...canvasCategoryOptions]} /></div>}
+                {tab === "public" ? <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),320px))] gap-3">
+                    {publicItems.map((item) => <article key={item.id} className="flex flex-col gap-2 rounded-xl border border-current/10 p-4">
+                        <div className="flex items-start justify-between gap-2">
+                            <h2 className="min-w-0 break-words text-base font-medium leading-6">{item.title} <span className="whitespace-nowrap select-text font-mono text-xs font-normal opacity-60">({item.number})</span></h2>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                                {item.hasRunningHub && <img src={`${import.meta.env.BASE_URL}icons/runninghub.ico`} alt="RunningHub" title="包含 RunningHub 生成配置" className="h-4 w-4 object-contain" />}
+                                <Tag className="!m-0">{item.category || "通用"}</Tag>
+                            </div>
+                        </div>
+                        <Popover trigger="click" open={descriptionPopover === item.id} onOpenChange={(open) => { if (!open) setDescriptionPopover(null); }} content={<div className="max-w-[min(320px,80vw)] whitespace-pre-wrap break-words">简介：{item.description?.trim() || "无"}</div>}>
+                            <Typography.Paragraph className="!mb-0 !text-xs [&>span[aria-hidden=true]]:hidden" type="secondary" ellipsis={{ rows: 2, expandable: true, expanded: false, symbol: "...", onExpand: (event) => { event.stopPropagation(); setDescriptionPopover(descriptionPopover === item.id ? null : item.id); } }}>简介：{item.description?.trim() || "无"}</Typography.Paragraph>
+                        </Popover>
+                        <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-xs opacity-70">
+                            <span className="break-all">发布者：{item.ownerName}</span><time dateTime={new Date(item.updatedAt).toISOString()}>{new Date(item.updatedAt).toLocaleString()}</time><span>使用 {item.usageCount || 0} 次</span>
+                        </div>
+                        <Space wrap size={[4, 4]} className="pt-1"><Button size="small" onClick={() => navigate(`/canvas/public/${item.id}`)}>查看</Button><Button size="small" disabled={!writable || busy} onClick={() => void usePublic(item, "usage")}>使用</Button><Button size="small" disabled={!writable || busy} onClick={() => void usePublic(item, "canvas")} title="复制到我的画布">复制画布</Button>
+                            {(user.admin || item.ownerId === user.id) && <Button size="small" disabled={!writable || busy} onClick={() => void act(async () => { await workspaceApi(`/canvases/${item.id}/publish`, { method: "DELETE" }); await store.load(); await refreshPublic(); })}>取消发布</Button>}
                         </Space>
                     </article>)}
                     {!publicItems.length && <Empty description="暂无公共画布" />}
                 </div> : <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {items.map((item) => <article key={item.id} className="space-y-3 rounded-xl border border-current/10 p-5">
                         <h2 className="text-lg font-medium">{item.title}</h2><Tag>{item.category || "通用"}</Tag>
+                        <Popover trigger="click" open={descriptionPopover === item.id} onOpenChange={(open) => { if (!open) setDescriptionPopover(null); }} content={<div className="max-w-[min(320px,80vw)] whitespace-pre-wrap break-words">简介：{item.description?.trim() || "无"}</div>}>
+                            <Typography.Paragraph className="!mb-0 !text-xs [&>span[aria-hidden=true]]:hidden" type="secondary" ellipsis={{ rows: 2, expandable: true, expanded: false, symbol: "...", onExpand: (event) => { event.stopPropagation(); setDescriptionPopover(descriptionPopover === item.id ? null : item.id); } }}>简介：{item.description?.trim() || "无"}</Typography.Paragraph>
+                        </Popover>
                         <p className="select-text font-mono text-xs">编号：{item.number || "保存后分配"}</p>
                         <p><Tag>{item.kind === "usage" ? "个人使用记录" : item.publishedId ? "已发布" : "私有"}</Tag>所有者：{item.ownerName}</p>
                         {item.sourceVersion && <p className="text-xs break-all">来源版本：{item.sourceVersion}</p>}
                         <Space wrap>
                             {item.deleted ? <Button disabled={!writable || busy} onClick={() => void act(async () => { await workspaceApi(`/canvases/${item.id}/lifecycle`, { method: "PATCH", body: jsonBody({ deleted: false }) }); await store.load(); })}>恢复为私有画布</Button> : <>
                                 <Button onClick={() => open(item.id)}>{group.archived ? "查看" : item.kind === "usage" ? "继续使用" : "打开"}</Button>
-                                <Button disabled={!writable} onClick={() => { setRename(item); setTitle(item.title); setCategory(item.category || "通用"); }}>画布设置</Button>
+                                <Button disabled={!writable} onClick={() => { setRename(item); setTitle(item.title); setDescription(item.description || ""); setCategory(item.category || "通用"); }}>画布设置</Button>
                                 {item.kind !== "usage" && <Button disabled={!writable || busy} onClick={() => publish(item)}>{item.publishedId ? "更新发布" : "发布"}</Button>}
                                 <Button danger disabled={!writable || busy} onClick={() => modal.confirm({ title: "移入回收站？", content: "同时取消该画布的公共发布。", onOk: async () => { await store.deleteProjects([item.id]); await refreshPublic(); } })}>删除</Button>
                             </>}
@@ -146,17 +163,18 @@ export default function CanvasPage() {
             if (creating) {
                 const id = createdId.current || store.createProject(title.trim(), category);
                 createdId.current = id;
-                store.updateProject(id, { title: title.trim(), category });
+                store.updateProject(id, { title: title.trim(), category, description: description.trim() });
                 await store.flush(); setCreating(false); open(id);
             } else if (rename) {
-                store.updateProject(rename.id, { title: title.trim(), category });
+                store.updateProject(rename.id, { title: title.trim(), category, description: description.trim() });
                 await store.flush(); setRename(null);
             }
         })}>
             <div className="space-y-4 py-3">
                 <label className="block">画布名称<Input aria-label="画布名称" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
                 <label className="block">分类<Select aria-label="画布分类" className="w-full" value={category} onChange={setCategory} options={canvasCategoryOptions} /></label>
-                {rename?.publishedId && <p className="text-sm">修改分类后，重新发布才会更新公共画布。</p>}
+                <label className="block">简介（选填）<Input.TextArea aria-label="画布简介" rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="介绍画布的用途或使用方式" /></label>
+                {rename?.publishedId && <p className="text-sm">修改分类或简介后，重新发布才会更新公共画布。</p>}
             </div>
         </Modal>
         {adminOpen && <WorkspaceAdmin onClose={() => setAdminOpen(false)} />}

@@ -3,6 +3,8 @@ import { Readable } from "node:stream";
 import { z } from "zod";
 import { comfySchema, generateComfy } from "./comfyui.js";
 import { runningHubSchema, generateRunningHub } from "./runninghub.js";
+import { transaction } from "./database.js";
+import { runningHubWorkflowId, runningHubWorkflowChoices, readRunningHubWorkflow } from "./runninghub-workflow.js";
 
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const schema = z.object({
@@ -18,26 +20,56 @@ const publicModel = ({ id, name, model, capability, apiFormat }) => ({ id, name,
 export async function registerModels(app) {
   const db = app.db;
   db.exec(`CREATE TABLE IF NOT EXISTS shared_models (id TEXT PRIMARY KEY, config TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS provider_settings (provider TEXT PRIMARY KEY, apiKey TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS model_jobs (modelId TEXT NOT NULL, jobId TEXT NOT NULL, userId TEXT NOT NULL, PRIMARY KEY(modelId,jobId,userId));
     CREATE TABLE IF NOT EXISTS model_downloads (id TEXT PRIMARY KEY, modelId TEXT NOT NULL, userId TEXT NOT NULL, url TEXT NOT NULL);`);
   const list = () => db.prepare("SELECT * FROM shared_models").all().map((row) => ({ ...JSON.parse(row.config), id: row.id }));
   const requireAdmin = (request) => { if (!request.user.admin) fail(403, "仅管理员可管理服务器模型"); };
+  const runningHubKey = () => db.prepare("SELECT apiKey FROM provider_settings WHERE provider='runninghub'").get()?.apiKey;
+  const saveRunningHubKey = (apiKey) => transaction(db, () => {
+    db.prepare("INSERT INTO provider_settings(provider,apiKey) VALUES('runninghub',?) ON CONFLICT(provider) DO UPDATE SET apiKey=excluded.apiKey").run(apiKey);
+    for (const { id, apiKey: oldKey, ...row } of list().filter((item) => item.apiFormat === "runninghub")) {
+      db.prepare("UPDATE shared_models SET config=? WHERE id=?").run(JSON.stringify(row), id);
+    }
+  });
+  const legacyKeys = [...new Set(list().filter((row) => row.apiFormat === "runninghub" && row.apiKey).map((row) => row.apiKey))];
+  if (!runningHubKey() && legacyKeys.length === 1) saveRunningHubKey(legacyKeys[0]);
+  app.get("/api/admin/runninghub/settings", async (request) => {
+    requireAdmin(request);
+    return { hasKey: Boolean(runningHubKey()), needsSetup: !runningHubKey() && legacyKeys.length > 1 };
+  });
+  app.put("/api/admin/runninghub/settings", async (request) => {
+    requireAdmin(request);
+    const { apiKey } = z.object({ apiKey: z.string().trim().min(1) }).parse(request.body);
+    saveRunningHubKey(apiKey);
+    return { hasKey: true };
+  });
+  app.post("/api/admin/runninghub/workflow", async (request) => {
+    requireAdmin(request);
+    const body = z.object({ source: z.string(), workflow: z.unknown().optional() }).parse(request.body);
+    const workflowId = runningHubWorkflowId(body.source);
+    const choices = body.workflow === undefined
+      ? await readRunningHubWorkflow(workflowId, runningHubKey(), AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS || 300_000)))
+      : runningHubWorkflowChoices(body.workflow);
+    return { workflowId, ...choices };
+  });
   app.get("/api/models", async () => list().filter((row) => row.enabled).map(publicModel));
   app.get("/api/admin/models", async (request) => {
     requireAdmin(request);
-    return list().map(({ apiKey, ...row }) => ({ ...row, hasKey: Boolean(apiKey) }));
+    return list().map(({ apiKey, ...row }) => ({ ...row, hasKey: Boolean(row.apiFormat === "runninghub" ? runningHubKey() : apiKey) }));
   });
   app.put("/api/admin/models/:id", async (request) => {
     requireAdmin(request);
     const values = schema.parse(request.body);
     const old = list().find((row) => row.id === request.params.id);
-    const apiKey = values.apiKey || old?.apiKey;
+    const apiKey = values.apiFormat === "runninghub" ? undefined : values.apiKey || old?.apiKey;
     if (values.apiFormat === "comfyui") {
       if (values.capability !== "image" || !values.comfy) fail(400, "ComfyUI 需配置图片工作流和输入输出节点");
     } else if (values.apiFormat === "runninghub") {
+      values.model = runningHubWorkflowId(values.model);
       if (values.capability !== "image" || !values.runninghub || !/^\d+$/.test(values.model)) fail(400, "请配置 RunningHub 图片工作流 ID 和节点映射");
       if (values.baseUrl.replace(/\/+$/, "") !== "https://www.runninghub.cn") fail(400, "RunningHub 地址请填写 https://www.runninghub.cn");
-      if (values.enabled && !apiKey) fail(400, "启用 RunningHub 前请填写 API Key");
+      if (values.enabled && !runningHubKey()) fail(400, "启用 RunningHub 前请在设置中保存全局 API Key");
     } else if (!apiKey) fail(400, "请填写 API Key");
     const id = old?.id || randomUUID();
     db.prepare("INSERT INTO shared_models(id,config) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config").run(id, JSON.stringify({ ...values, apiKey }));
@@ -56,6 +88,7 @@ export async function registerModels(app) {
       if (!config) fail(404, "服务器模型已停用或删除，请重新选择");
       const path = request.params["*"];
       if (config.apiFormat === "runninghub") {
+        config.apiKey = runningHubKey();
         if (request.method !== "POST" || path !== "v1/images/edits") fail(400, "草稿细化需要参考图片，请连接 1 张图片后生成");
         let form;
         try { form = await new Response(request.body, { headers: { "Content-Type": request.headers["content-type"] || "" } }).formData(); }

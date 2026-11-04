@@ -25,6 +25,7 @@ export function database(directory) {
       BEGIN INSERT INTO canvas_numbers(canvasId) VALUES(NEW.id); END;
     INSERT INTO canvas_numbers(canvasId) SELECT id FROM canvases
       WHERE NOT EXISTS (SELECT 1 FROM canvas_numbers WHERE canvasId=canvases.id) ORDER BY createdAt,id;
+    CREATE TABLE IF NOT EXISTS canvas_usage_runs (canvasId TEXT NOT NULL REFERENCES canvases(id), actor TEXT NOT NULL REFERENCES users(id), runId TEXT NOT NULL, PRIMARY KEY(canvasId,actor,runId));
     CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL REFERENCES users(id), mime TEXT NOT NULL, bytes INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS file_refs (fileId TEXT NOT NULL REFERENCES files(id), canvasId TEXT NOT NULL REFERENCES canvases(id), versionId TEXT NOT NULL DEFAULT '', PRIMARY KEY(fileId,canvasId,versionId));
     CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, createdAt TEXT NOT NULL);

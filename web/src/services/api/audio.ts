@@ -1,3 +1,4 @@
+import { markCanvasSubmission } from "./canvas-usage";
 import { workspaceHeaders } from "./workspace";
 import axios from "axios";
 
@@ -31,6 +32,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
         if (!requestConfig.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
         if (!requestConfig.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
         try {
+            markCanvasSubmission(options?.signal);
             const result = await runModelPlugin({
                 capability: "audio",
                 script,

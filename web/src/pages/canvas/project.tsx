@@ -1,3 +1,4 @@
+import { trackCanvasRun } from "@/services/api/canvas-usage";
 import CanvasViewer from "./viewer";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
@@ -325,9 +326,12 @@ function InfiniteCanvasPage() {
     const startGenerationRequest = useCallback((targetNodeId: string, originNodeId: string, runningId = originNodeId, controller = new AbortController()) => {
         const previous = generationRequestsRef.current.get(targetNodeId);
         if (previous?.controller !== controller) previous?.controller.abort();
+        if (nodesRef.current.find((node) => node.id === runningId)?.type === CanvasNodeType.Config) {
+            trackCanvasRun(controller.signal, projectId, () => { message.warning("本次使用次数未能保存，生成不受影响"); });
+        }
         generationRequestsRef.current.set(targetNodeId, { targetNodeId, originNodeId, runningNodeId: runningId, controller });
         return controller;
-    }, []);
+    }, [projectId, message]);
 
     const finishGenerationRequest = useCallback((targetNodeId: string, controller: AbortController) => {
         const request = generationRequestsRef.current.get(targetNodeId);

@@ -1,3 +1,4 @@
+import { markCanvasSubmission } from "./canvas-usage";
 import { workspaceHeaders } from "./workspace";
 import { validateServerImageInputs } from "@/stores/use-server-model-store";
 import axios from "axios";
@@ -472,6 +473,7 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
 }
 
 async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    markCanvasSubmission(options?.signal);
     const response = await fetch(aiApiUrl(config, "/responses"), {
         method: "POST",
         headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
@@ -579,6 +581,7 @@ function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoi
 }
 
 async function requestGeminiStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    markCanvasSubmission(options?.signal);
     const response = await fetch(`${geminiApiUrl(config, "streamGenerateContent")}?alt=sse`, {
         method: "POST",
         headers: geminiHeaders(config),
@@ -703,6 +706,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         const requestSize = resolveRequestSize(config.size);
         const background = normalizeBackground(config.background);
         try {
+            markCanvasSubmission(options?.signal);
             const result = await runModelPlugin({
                 capability: "image",
                 script,
@@ -766,6 +770,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
+            markCanvasSubmission(options?.signal);
             const result = await runModelPlugin({
                 capability: "image",
                 script,
@@ -827,6 +832,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     const script = resolveModelScript(config, config.model || config.textModel);
     if (script) {
         try {
+            markCanvasSubmission(options?.signal);
             const answer = await runModelPlugin<string>({
                 capability: "text",
                 script,

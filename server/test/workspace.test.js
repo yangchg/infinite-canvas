@@ -22,7 +22,8 @@ test("RunningHub configuration requires admin and a key before enabling, keeps s
   const id = saved.json().id;
   assert.deepEqual((await send(owner, "GET", "/models")).json(), []);
   assert.equal((await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: true })).statusCode, 400);
-  assert.equal((await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: true, apiKey: "rh-secret" })).statusCode, 200);
+  assert.equal((await send(admin, "PUT", "/admin/runninghub/settings", { apiKey: "rh-secret" })).statusCode, 200);
+  assert.equal((await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: true })).statusCode, 200);
   assert.equal((await send(admin, "GET", "/admin/models")).body.includes("rh-secret"), false);
   assert.equal((await send(owner, "GET", "/models")).body.includes("runninghub\":"), false);
   const path = `/model-gateway/${id}/v1/images/edits`;
@@ -144,8 +145,8 @@ test("canvas numbers are unique, immutable and allocated to copies and existing 
   const { app, directory, send, admin, owner, member, projectId, save } = await fixture(t);
   const first = (await save(owner, "number-one")).json();
   const second = (await save(member, "number-two")).json();
-  assert.equal(first.number, "HB-000001");
-  assert.equal(second.number, "HB-000002");
+  assert.equal(first.number, "00001");
+  assert.equal(second.number, "00002");
   assert.equal((await save(owner, "number-one", 1)).json().number, first.number);
   await send(owner, "POST", "/canvases/number-one/publish", { revision: 2 });
   assert.equal((await send(member, "GET", `/projects/${projectId}/public`)).json()[0].number, first.number);
@@ -361,4 +362,185 @@ test("canvas categories follow published snapshots, defaults, copies and members
   await send(owner, "POST", "/canvases/character/publish", { revision: 2 });
   assert.equal((await list(member, "角色原画")).json().length, 0);
   assert.deepEqual((await list(member, "UI")).json().map((row) => row.id), ["character"]);
+});
+
+test("RunningHub global settings enforce admin, protect keys and rotate only new requests", async (t) => {
+  const { app, send, admin, owner } = await fixture(t);
+  const settingPath = "/admin/runninghub/settings";
+  assert.equal((await send(owner, "GET", settingPath)).statusCode, 403);
+  assert.equal((await send(owner, "PUT", settingPath, { apiKey: "bad" })).statusCode, 403);
+  assert.equal((await send(admin, "PUT", settingPath, { apiKey: "secret-a" }, { "x-csrf-token": "wrong" })).statusCode, 403);
+  assert.equal((await send(admin, "PUT", settingPath, { apiKey: " " })).statusCode, 400);
+  assert.equal((await send(admin, "PUT", settingPath, { apiKey: "secret-a" })).statusCode, 200);
+  assert.deepEqual((await send(admin, "GET", settingPath)).json(), { hasKey: true, needsSetup: false });
+  const settings = { name: "RH", model: "https://www.runninghub.cn/workflow-detail/123", capability: "image", apiFormat: "runninghub", baseUrl: "https://www.runninghub.cn", enabled: true,
+    apiKey: "ignored-per-model", runninghub: { promptNode: "1", promptField: "text", imageNode: "2", imageField: "image", outputNode: "3" } };
+  const saved = await send(admin, "PUT", "/admin/models/new", settings);
+  assert.equal(saved.statusCode, 200, saved.body);
+  const id = saved.json().id;
+  const stored = JSON.parse(app.db.prepare("SELECT config FROM shared_models WHERE id=?").get(id).config);
+  assert.equal(stored.model, "123");
+  assert.equal(stored.apiKey, undefined);
+  assert.equal((await send(admin, "GET", "/admin/models")).body.includes("secret-a"), false);
+  assert.equal((await send(owner, "GET", "/models")).body.includes("secret-a"), false);
+  let uploads = 0; const submittedKeys = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    url = String(url);
+    if (url.endsWith("/upload")) {
+      uploads++;
+      const key = options.body.get("apiKey");
+      submittedKeys.push(key);
+      if (uploads === 1) assert.equal((await send(admin, "PUT", settingPath, { apiKey: "secret-b" })).statusCode, 200);
+      return Response.json({ code: 0, data: { fileName: "draft.png" } });
+    }
+    if (url.endsWith("/create")) {
+      assert.equal(JSON.parse(options.body).apiKey, submittedKeys.at(-1));
+      return Response.json({ code: 0, data: { taskId: "task-" + uploads } });
+    }
+    if (url.endsWith("/outputs")) {
+      assert.equal(JSON.parse(options.body).apiKey, submittedKeys.at(-1));
+      return Response.json({ code: 0, data: [{ nodeId: "3", fileUrl: "https://rh-images.xiaoyaoyou.com/result.png" }] });
+    }
+    assert.equal(url, "https://rh-images.xiaoyaoyou.com/result.png");
+    assert.equal(options.headers, undefined);
+    return new Response("image", { headers: { "Content-Type": "image/png" } });
+  });
+  for (let i = 0; i < 2; i++) {
+    const form = new FormData(); form.set("model", "123"); form.set("prompt", "draft");
+    form.set("image", new Blob(["draft"], { type: "image/png" }), "draft.png");
+    const encoded = new Response(form);
+    const response = await send(owner, "POST", `/model-gateway/${id}/v1/images/edits`, Buffer.from(await encoded.arrayBuffer()), { "content-type": encoded.headers.get("content-type") });
+    assert.equal(response.statusCode, 200, response.body);
+  }
+  assert.deepEqual(submittedKeys, ["secret-a", "secret-b"]);
+});
+
+test("RunningHub workflow import and read never submit tasks or disclose input values", async (t) => {
+  const { send, admin, owner } = await fixture(t);
+  const path = "/admin/runninghub/workflow";
+  const workflow = {
+    "1": { class_type: "CLIPTextEncode", inputs: { text: "private prompt" }, _meta: { title: "正面提示词" } },
+    "2": { class_type: "LoadImage", inputs: { image: "private-file.png" } },
+    "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+    "4": { class_type: "CLIPTextEncode", inputs: { text: "negative prompt" } },
+  };
+  assert.equal((await send(owner, "POST", path, { source: "123", workflow })).statusCode, 403);
+  assert.equal((await send(admin, "POST", path, { source: "123", workflow }, { "x-csrf-token": "wrong" })).statusCode, 403);
+  assert.equal((await send(admin, "POST", path, { source: "123" })).statusCode, 400);
+  const imported = await send(admin, "POST", path, { source: "https://www.runninghub.cn/workflow-detail/123?from=share", workflow });
+  assert.equal(imported.statusCode, 200, imported.body);
+  assert.equal(imported.json().prompts.length, 2);
+  assert.equal(imported.json().images[0].field, "image");
+  assert.equal(imported.json().outputs[0].nodeId, "3");
+  assert.equal(imported.body.includes("private"), false);
+  assert.equal((await send(admin, "POST", path, { source: "https://evil.invalid/workflow-detail/123", workflow })).statusCode, 400);
+  assert.equal((await send(admin, "POST", path, { source: "123", workflow: { nodes: [] } })).statusCode, 400);
+  await send(admin, "PUT", "/admin/runninghub/settings", { apiKey: "read-key" });
+  let calls = 0, detailMode = "success";
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls++;
+    if (url === "https://www.runninghub.cn/api/portal/workflow/detail") {
+      assert.equal(options.headers.Authorization, undefined);
+      assert.equal(options.redirect, "error");
+      assert.deepEqual(JSON.parse(options.body), { workflowId: "123" });
+      if (detailMode === "network") throw new Error("unavailable");
+      if (detailMode === "http") return new Response("unavailable", { status: 503 });
+      return Response.json({ code: 0, data: { name: detailMode === "success" ? " 草稿细化 " : null } });
+    }
+    assert.equal(url, "https://www.runninghub.cn/api/openapi/getJsonApiFormat");
+    assert.equal(options.redirect, "error");
+    assert.deepEqual(JSON.parse(options.body), { apiKey: "read-key", workflowId: "123" });
+    return Response.json({ code: 0, data: { prompt: JSON.stringify(workflow) } });
+  });
+  const read = await send(admin, "POST", path, { source: "123" });
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.body.includes("read-key"), false);
+  assert.deepEqual(read.json(), { ...imported.json(), name: "草稿细化" });
+  assert.equal(calls, 2);
+  for (detailMode of ["network", "http", "missing"]) {
+    const fallback = await send(admin, "POST", path, { source: "123" });
+    assert.equal(fallback.statusCode, 200);
+    assert.deepEqual(fallback.json(), imported.json());
+  }
+});
+
+test("RunningHub adopts one legacy key, requires selection for conflicts and persists the global key", async (t) => {
+  for (const keys of [["same", "same"], ["one", "two"]]) {
+    const directory = await mkdtemp(join(tmpdir(), "canvas-rh-migration-"));
+    const initial = await createApp({ directory });
+    for (const [i, apiKey] of keys.entries()) initial.db.prepare("INSERT INTO shared_models VALUES(?,?)").run(String(i), JSON.stringify({ apiFormat: "runninghub", apiKey }));
+    await initial.close();
+    const reopened = await createApp({ directory });
+    const value = reopened.db.prepare("SELECT apiKey FROM provider_settings WHERE provider='runninghub'").get()?.apiKey;
+    assert.equal(value, keys[0] === keys[1] ? "same" : undefined);
+    if (value) {
+      for (const row of reopened.db.prepare("SELECT config FROM shared_models").all()) assert.equal(JSON.parse(row.config).apiKey, undefined);
+    }
+    await reopened.close();
+    const third = await createApp({ directory });
+    assert.equal(third.db.prepare("SELECT apiKey FROM provider_settings WHERE provider='runninghub'").get()?.apiKey, value);
+    await third.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("public usage counts deduplicate runs and exclude copies and unauthorized users", async (t) => {
+  const { send, owner, member, stranger, projectId, save } = await fixture(t);
+  await save(owner, "usage-source");
+  await send(owner, "POST", "/canvases/usage-source/publish", { revision: 1 });
+  const usage = (await send(member, "POST", "/canvases/usage-source/use", { kind: "usage" })).json();
+  const copy = (await send(member, "POST", "/canvases/usage-source/use", { kind: "canvas" })).json();
+  const count = async () => (await send(owner, "GET", `/projects/${projectId}/public`)).json()[0].usageCount;
+  assert.equal(await count(), 0);
+  const runId = crypto.randomUUID();
+  for (let step = 0; step < 3; step++) assert.equal((await send(member, "POST", `/canvases/${usage.id}/usage-runs`, { runId })).statusCode, 200);
+  assert.equal(await count(), 1);
+  await send(member, "POST", `/canvases/${usage.id}/usage-runs`, { runId: crypto.randomUUID() });
+  assert.equal(await count(), 2);
+  await send(member, "POST", `/canvases/${copy.id}/usage-runs`, { runId: crypto.randomUUID() });
+  assert.equal(await count(), 2);
+  assert.notEqual((await send(stranger, "POST", `/canvases/${usage.id}/usage-runs`, { runId: crypto.randomUUID() })).statusCode, 200);
+  assert.equal((await send(member, "POST", `/canvases/${usage.id}/usage-runs`, { runId: "invalid" })).statusCode, 400);
+  await send(owner, "POST", "/canvases/usage-source/usage-runs", { runId: crypto.randomUUID() });
+  assert.equal(await count(), 3);
+  await send(owner, "POST", "/canvases/usage-source/publish", { revision: 1 });
+  assert.equal(await count(), 3);
+});
+
+
+test("canvas descriptions persist and public descriptions follow published snapshots", async (t) => {
+  const { send, owner, member, projectId } = await fixture(t);
+  const save = (revision, description) => send(owner, "PUT", "/canvases/description-test", { projectId, title: "简介测试", revision, content: { ...blank, description } });
+  assert.equal((await save(0, "第一版简介\n第二行\n第三行")).statusCode, 200);
+  await send(owner, "POST", "/canvases/description-test/publish", { revision: 1 });
+  await save(1, "新的简介");
+  const list = (await send(member, "GET", `/projects/${projectId}/public`)).json();
+  assert.equal(list[0].description, "第一版简介\n第二行\n第三行");
+  const copy = (await send(member, "POST", "/canvases/description-test/use", { kind: "canvas" })).json();
+  assert.equal(copy.description, list[0].description);
+  await send(owner, "POST", "/canvases/description-test/publish", { revision: 2 });
+  assert.equal((await send(member, "GET", `/projects/${projectId}/public`)).json()[0].description, "新的简介");
+  await save(2, "");
+  assert.equal((await send(owner, "GET", "/canvases")).json()[0].description, "");
+});
+
+
+test("public RunningHub badge follows published config nodes rather than names or draft edits", async (t) => {
+  const { send, admin, owner, member, projectId } = await fixture(t);
+  const model = (await send(admin, "PUT", "/admin/models/new", { name: "RH", model: "123", capability: "image", apiFormat: "runninghub", baseUrl: "https://www.runninghub.cn", enabled: false,
+    runninghub: { promptNode: "1", promptField: "text", imageNode: "2", imageField: "image", outputNode: "3" } })).json();
+  const node = { id: "config", type: "config", title: "生成配置", position: { x: 0, y: 0 }, width: 300, height: 300, metadata: { modelSource: "server", model: `server-${model.id}::123` } };
+  const save = (revision, nodes) => send(owner, "PUT", "/canvases/rh-badge", { projectId, title: "RunningHub", revision, content: { ...blank, nodes } });
+  const badge = async () => (await send(member, "GET", `/projects/${projectId}/public`)).json()[0].hasRunningHub;
+  assert.equal((await save(0, [node])).statusCode, 200);
+  await send(owner, "POST", "/canvases/rh-badge/publish", { revision: 1 });
+  assert.equal(await badge(), true);
+  await save(1, [{ ...node, type: "text", title: "RunningHub" }]);
+  assert.equal(await badge(), true);
+  await send(owner, "POST", "/canvases/rh-badge/publish", { revision: 2 });
+  assert.equal(await badge(), false);
+  await save(2, [{ ...node, metadata: { model: "local::RunningHub" } }]);
+  await send(owner, "POST", "/canvases/rh-badge/publish", { revision: 3 });
+  assert.equal(await badge(), false);
 });

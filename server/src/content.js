@@ -4,6 +4,7 @@ export const categorySchema = z.enum(["通用", "场景原画", "角色原画", 
 
 export const contentSchema = z.object({
   category: categorySchema.default("通用"),
+  description: z.string().default(""),
   nodes: z.array(z.object({ id: z.string(), type: z.string(), title: z.string(), position: z.object({ x: z.number(), y: z.number() }), width: z.number(), height: z.number(), metadata: z.record(z.string(), z.unknown()).optional() })),
   connections: z.array(z.object({ id: z.string(), fromNodeId: z.string(), toNodeId: z.string() })),
   chatSessions: z.array(z.unknown()).default([]), activeChatId: z.string().nullable().default(null),

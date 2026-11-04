@@ -49,8 +49,8 @@ export async function createApp(options = {}) {
     if (owner && row.ownerId !== user.id) fail(403, "仅所有者可修改画布");
     return row;
   };
-  const canvasNumber = (id) => `HB-${String(get("SELECT number FROM canvas_numbers WHERE canvasId=?", id).number).padStart(6, "0")}`;
-  const serialize = (row) => ({ category: "通用", ...JSON.parse(row.content), id: row.id, number: canvasNumber(row.id), projectId: row.projectId, ownerId: row.ownerId,
+  const canvasNumber = (id) => String(get("SELECT number FROM canvas_numbers WHERE canvasId=?", id).number).padStart(5, "0");
+  const serialize = (row) => ({ category: "通用", description: "", ...JSON.parse(row.content), id: row.id, number: canvasNumber(row.id), projectId: row.projectId, ownerId: row.ownerId,
     ownerName: get("SELECT displayName FROM users WHERE id=?", row.ownerId).displayName,
     title: row.title, revision: row.revision, publishedId: row.publishedId, deleted: Boolean(row.deleted),
     sourceId: row.sourceId, sourceVersion: row.sourceVersion, kind: row.kind, createdAt: row.createdAt, updatedAt: row.updatedAt });
@@ -202,9 +202,14 @@ export async function createApp(options = {}) {
     member(request.user, request.params.id);
     const category = categorySchema.optional().parse(request.query.category);
     return all(`SELECT c.id,c.projectId,c.ownerId,u.displayName AS ownerName,v.title,v.id AS publishedId,v.createdAt AS updatedAt,
+      (SELECT COUNT(*) FROM canvas_usage_runs r WHERE r.canvasId=c.id) AS usageCount,
+      EXISTS(SELECT 1 FROM json_each(v.content, '$.nodes') n JOIN shared_models m
+        ON substr(json_extract(n.value, '$.metadata.model'), 1, length(m.id) + 9) = 'server-' || m.id || '::'
+        WHERE json_extract(n.value, '$.type') = 'config' AND json_extract(m.config, '$.apiFormat') = 'runninghub') AS hasRunningHub,
+      COALESCE(json_extract(v.content, '$.description'), '') AS description,
       COALESCE(json_extract(v.content, '$.category'), '通用') AS category
       FROM canvases c JOIN versions v ON v.id=c.publishedId JOIN users u ON u.id=c.ownerId WHERE c.projectId=? AND c.deleted=0
-      AND (? IS NULL OR COALESCE(json_extract(v.content, '$.category'), '通用')=?)`, request.params.id, category ?? null, category ?? null).map((row) => ({ ...row, number: canvasNumber(row.id) }));
+      AND (? IS NULL OR COALESCE(json_extract(v.content, '$.category'), '通用')=?)`, request.params.id, category ?? null, category ?? null).map((row) => ({ ...row, hasRunningHub: Boolean(row.hasRunningHub), number: canvasNumber(row.id) }));
   });
   app.get("/api/canvases/:id/public", async (request) => {
     const row = canvas(request.user, request.params.id);
@@ -247,6 +252,16 @@ export async function createApp(options = {}) {
     if (row.ownerId !== request.user.id) admin(request.user);
     transaction(db, () => { run("UPDATE canvases SET publishedId=NULL WHERE id=?", row.id); audit(request.user, "canvas.unpublish", row.id); });
     return { ok: true };
+  });
+  app.post("/api/canvases/:id/usage-runs", async (request) => {
+    const row = canvas(request.user, request.params.id, { owner: true, write: true });
+    const { runId } = z.object({ runId: z.string().uuid() }).parse(request.body);
+    const sourceId = row.kind === "usage" ? row.sourceId : row.publishedId ? row.id : null;
+    if (!sourceId) return { counted: false };
+    const source = canvas(request.user, sourceId);
+    if (!source.publishedId) return { counted: false };
+    run("INSERT OR IGNORE INTO canvas_usage_runs(canvasId,actor,runId) VALUES(?,?,?)", source.id, request.user.id, runId);
+    return { counted: true };
   });
   app.post("/api/canvases/:id/use", async (request) => transaction(db, () => {
     const row = canvas(request.user, request.params.id, { write: true });
