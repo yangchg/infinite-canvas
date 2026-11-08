@@ -21,6 +21,7 @@ services:
     environment:
       APP_ORIGINS: http://localhost:3000,http://${CANVAS_LAN_IP}:3000
       TRUST_PROXY: "1"
+      DINGTALK_NOTIFY_URL: http://app:3000/notifications/dingtalk
     volumes:
       - ../../data/canvas-server:/app/data
     restart: unless-stopped

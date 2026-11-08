@@ -13,7 +13,7 @@ export const comfySchema = z.object({
 });
 
 // This adapter accepts the configured text-to-image workflow only, never a user's graph or URL.
-export async function generateComfy(config, input, signal) {
+export async function generateComfy(config, input, signal, onSubmitted = () => {}, resumeTaskId) {
   if (typeof input.prompt !== "string" || !input.prompt.trim()) fail(400, "请输入提示词");
   const n = input.n ?? 1;
   if (!Number.isInteger(n) || n < 1 || n > 15) fail(400, "生成数量应为 1 至 15");
@@ -36,9 +36,13 @@ export async function generateComfy(config, input, signal) {
     if (!response.ok) { await response.body?.cancel(); fail(502, `ComfyUI 返回 ${response.status}，请检查工作流、模型文件和节点配置`); }
     return response;
   };
-  const submitted = await (await call("/prompt", { prompt: workflow, client_id: randomUUID() })).json();
-  if (!submitted.prompt_id || submitted.error) fail(502, "ComfyUI 未接受工作流，请检查节点及模型配置");
-  const id = submitted.prompt_id;
+  let id = resumeTaskId;
+  if (!id) {
+    const submitted = await (await call("/prompt", { prompt: workflow, client_id: randomUUID() })).json();
+    if (!submitted.prompt_id || submitted.error) fail(502, "ComfyUI 未接受工作流，请检查节点及模型配置");
+    id = submitted.prompt_id;
+    onSubmitted(id);
+  }
   while (true) {
     const history = await (await call(`/history/${encodeURIComponent(id)}`)).json();
     const result = history[id];

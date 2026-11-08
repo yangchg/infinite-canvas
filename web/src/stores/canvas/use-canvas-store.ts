@@ -1,3 +1,4 @@
+import { canvasContent, mergeCanvas, sameCanvasValue } from "../../../../server/src/task-merge.js";
 import { create } from "zustand";
 import { nanoid } from "nanoid";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -46,6 +47,7 @@ type CanvasStore = {
     load: () => Promise<void>;
     selectGroup: (id: string) => void;
     flush: () => Promise<void>;
+    syncProject: (id: string) => Promise<void>;
     createProject: (title?: string, category?: CanvasCategory) => string;
     importProject: (project: Partial<CanvasProject>) => string;
     openProject: (id: string) => CanvasProject | null;
@@ -59,6 +61,11 @@ const revisions = new Map<string, number>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 let draining: Promise<void> | undefined;
 let editVersion = 0;
+const remoteListeners = new Set<(id: string, before: CanvasProject, after: CanvasProject) => void>();
+export function onCanvasRemoteChange(listener: (id: string, before: CanvasProject, after: CanvasProject) => void) {
+    remoteListeners.add(listener);
+    return () => { remoteListeners.delete(listener); };
+}
 
 function schedule(project: CanvasProject) {
     editVersion += 1;
@@ -85,6 +92,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
             set({ projects, groups, selectedGroupId, hydrated: true, error: "" });
         } catch (error) { set({ error: String(error) }); }
     },
+    syncProject: async (id) => {
+        await get().flush();
+        const remote = await workspaceApi<CanvasProject>(`/canvases/${id}`);
+        if (remote.revision === revisions.get(id)) return;
+        const current = get().projects.find((item) => item.id === id);
+        if (!current) return;
+        // The PUT rebases only revisions written by background tasks; ordinary conflicts stay visible.
+        schedule(current);
+        await get().flush();
+    },
     flush: () => {
         clearTimeout(timer);
         if (draining) return draining;
@@ -98,10 +115,18 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
                 }
                 while (pending.size) {
                     const [id, project] = pending.entries().next().value!;
-                    const response = await workspaceApi<{ revision: number; number: string }>(`/canvases/${id}`, { method: "PUT", body: jsonBody({ projectId: project.projectId, title: project.title, revision: revisions.get(id) || 0, content: project }) });
+                    const response = await workspaceApi<{ revision: number; number: string; content: CanvasProject }>(`/canvases/${id}`, { method: "PUT", body: jsonBody({ projectId: project.projectId, title: project.title, revision: revisions.get(id) || 0, content: project }) });
+                    let merged = pending.get(id) || project;
+                    if (!sameCanvasValue(canvasContent(project), response.content)) {
+                        const { hydrateCanvasImages } = await import("@/lib/canvas/canvas-generation-helpers");
+                        const after = { ...response.content, nodes: await hydrateCanvasImages(response.content.nodes) };
+                        merged = { ...(pending.get(id) || project), ...mergeCanvas(canvasContent(project), canvasContent(pending.get(id) || project), after) };
+                        for (const listener of remoteListeners) listener(id, project, after);
+                    }
                     revisions.set(id, response.revision);
                     if (pending.get(id) === project) pending.delete(id);
-                    set((state) => ({ projects: state.projects.map((item) => item.id === id ? { ...item, revision: response.revision, number: response.number } : item) }));
+                    else pending.set(id, merged);
+                    set((state) => ({ projects: state.projects.map((item) => item.id === id ? { ...merged, revision: response.revision, number: response.number } : item) }));
                 }
                 set({ error: "", dirty: false });
             } catch (error) { set({ error: String(error), dirty: true }); throw error; }

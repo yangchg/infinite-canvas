@@ -3,9 +3,9 @@ import { z } from "zod";
 
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 export const runningHubSchema = z.object({
-  promptNode: z.string().regex(/^\d+$/), promptField: z.string().min(1),
-  imageNode: z.string().regex(/^\d+$/), imageField: z.string().min(1),
-  outputNode: z.string().regex(/^\d+$/),
+  promptNode: z.string().regex(/^\d+(?::\d+)*$/), promptField: z.string().min(1),
+  imageNode: z.string().regex(/^\d+(?::\d+)*$/), imageField: z.string().min(1),
+  outputNode: z.string().regex(/^\d+(?::\d+)*$/),
 });
 
 export function runningHubResultUrl(value) {
@@ -17,7 +17,7 @@ export function runningHubResultUrl(value) {
   return url;
 }
 
-export async function generateRunningHub(config, form, signal, onSubmitted, fetcher = fetch) {
+export async function generateRunningHub(config, form, signal, onSubmitted, fetcher = fetch, resumeTaskId) {
   const images = [...form.getAll("image"), ...form.getAll("image[]")];
   if (images.length !== 1 || !(images[0] instanceof Blob) || !images[0].type.startsWith("image/")) fail(400, "草稿细化需要且仅支持 1 张参考图片");
   if (Number(form.get("n") || 1) !== 1) fail(400, "草稿细化每次生成 1 张图片，请将生成数量设为 1");
@@ -41,18 +41,21 @@ export async function generateRunningHub(config, form, signal, onSubmitted, fetc
     }
     return result.data;
   };
-  const upload = new FormData();
-  upload.set("apiKey", config.apiKey); upload.set("fileType", "input"); upload.set("file", images[0], "draft.png");
-  const uploaded = check(await call("upload", upload));
-  if (!uploaded?.fileName) fail(502, "RunningHub 未返回上传文件名");
   const mapping = config.runninghub;
-  const task = check(await call("create", { workflowId: config.model, nodeInfoList: [
-    { nodeId: mapping.promptNode, fieldName: mapping.promptField, fieldValue: prompt },
-    { nodeId: mapping.imageNode, fieldName: mapping.imageField, fieldValue: uploaded.fileName },
-  ] }));
-  if (!task?.taskId) fail(502, "RunningHub 未返回任务 ID，请先检查平台任务记录");
-  const taskId = String(task.taskId);
-  onSubmitted(taskId);
+  let taskId = resumeTaskId;
+  if (!taskId) {
+    const upload = new FormData();
+    upload.set("apiKey", config.apiKey); upload.set("fileType", "input"); upload.set("file", images[0], "draft.png");
+    const uploaded = check(await call("upload", upload));
+    if (!uploaded?.fileName) fail(502, "RunningHub 未返回上传文件名");
+    const task = check(await call("create", { workflowId: config.model, nodeInfoList: [
+      { nodeId: mapping.promptNode, fieldName: mapping.promptField, fieldValue: prompt },
+      { nodeId: mapping.imageNode, fieldName: mapping.imageField, fieldValue: uploaded.fileName },
+    ] }));
+    if (!task?.taskId) fail(502, "RunningHub 未返回任务 ID，请先检查平台任务记录");
+    taskId = String(task.taskId);
+    onSubmitted(taskId);
+  }
   while (true) {
     const result = await call("outputs", { taskId });
     if ([804, 813].includes(result.code)) { await delay(1000, undefined, { signal }); continue; }

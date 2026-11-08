@@ -1,9 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { generateRunningHub, runningHubResultUrl } from "../src/runninghub.js";
+import { generateRunningHub, runningHubResultUrl, runningHubSchema } from "../src/runninghub.js";
+import { runningHubWorkflowChoices, runningHubWorkflowId } from "../src/runninghub-workflow.js";
 
 const config = { ...JSON.parse(readFileSync(new URL("../examples/runninghub-draft-detail.json", import.meta.url))), apiKey: "private-test-key" };
+test("RunningHub subgraph node paths import and map without losing their IDs", () => {
+  assert.equal(runningHubWorkflowId('https://www.runninghub.cn/workflow/2118551226722897921?source=workspace'), '2118551226722897921');
+  const choices = runningHubWorkflowChoices(JSON.stringify({
+    '8144:8143': { class_type: 'CLIPTextEncode', inputs: { text: 'private prompt' } },
+    '5702:8090': { class_type: 'LoadImage', inputs: { image: 'private.png' } },
+    '5702:8091:1': { class_type: 'SaveImage', inputs: { images: ['5702:8090', 0] } },
+  }));
+  assert.equal(choices.prompts[0].nodeId, '8144:8143');
+  assert.equal(choices.images[0].nodeId, '5702:8090');
+  assert.equal(choices.outputs[0].nodeId, '5702:8091:1');
+  assert.equal(JSON.stringify(choices).includes('private'), false);
+  assert.equal(runningHubSchema.parse({ promptNode: choices.prompts[0].nodeId, promptField: 'text', imageNode: choices.images[0].nodeId, imageField: 'image', outputNode: choices.outputs[0].nodeId }).outputNode, '5702:8091:1');
+  assert.throws(() => runningHubWorkflowChoices({ nodes: [], links: [] }), /API/);
+});
 function input() {
   const form = new FormData();
   form.set("prompt", "细化草稿"); form.set("n", "1");

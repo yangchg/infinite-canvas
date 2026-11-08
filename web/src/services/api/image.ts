@@ -696,6 +696,27 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
     return images;
 }
 
+// Reuse foreground prompt/parameter normalization without sending credentials to task APIs.
+export function prepareBackgroundImage(config: AiConfig, prompt: string, references: ReferenceImage[], pendingOutputIds = new Set<string>()) {
+    validateServerImageInputs(config, references.length);
+    const request = resolveModelRequestConfig(config, config.model || config.imageModel);
+    const text = references.length ? buildImageReferencePromptText(prompt, references) : prompt;
+    const gemini = request.apiFormat === "gemini";
+    return {
+        model: config.model, displayPrompt: prompt,
+        prompt: gemini ? text : withSystemPrompt(request, text),
+        systemPrompt: gemini ? request.systemPrompt.trim() : undefined,
+        count: Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1))),
+        parameters: gemini ? {} : { size: resolveRequestSize(config.size), quality: normalizeQuality(config.quality), background: normalizeBackground(config.background) },
+        gemini: gemini ? resolveGeminiImageConfig(request) : {},
+        metadata: { model: config.model, size: config.size, quality: config.quality, background: config.background },
+        references: references.map((image) => {
+            if (!image.storageKey && !pendingOutputIds.has(image.id)) throw new Error("后台生成需要已保存的参考图，请重新上传该图片后再运行。");
+            return { nodeId: image.id, storageKey: image.storageKey };
+        }),
+    };
+}
+
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
     validateServerImageInputs(config, 0);
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);

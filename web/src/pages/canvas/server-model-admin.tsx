@@ -36,7 +36,8 @@ export function ServerModelAdmin() {
     };
     const choices = (items: RunningHubChoice[]) => items.map((item) => ({ value: item.field ? `${item.nodeId}:${item.field}` : item.nodeId, label: item.label }));
     const chooseInput = (kind: "prompt" | "image", value: string) => {
-        const [nodeId, field] = value.split(":");
+        const separator = value.lastIndexOf(":");
+        const nodeId = value.slice(0, separator), field = value.slice(separator + 1);
         form.setFieldValue(["runninghub", `${kind}Node`], nodeId);
         form.setFieldValue(["runninghub", `${kind}Field`], field);
     };

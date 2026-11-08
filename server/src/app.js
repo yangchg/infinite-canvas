@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { database, transaction } from "./database.js";
 import { digest, hashPassword, verifyPassword } from "./password.js";
 import { categorySchema, contentSchema, cleanContent, fileKeys, publishContent } from "./content.js";
+import { registerCanvasTasks, rebaseTaskEdits } from "./canvas-tasks.js";
 import { registerModels } from "./models.js";
 
 const name = z.string().trim().min(1);
@@ -217,23 +218,25 @@ export async function createApp(options = {}) {
     const version = get("SELECT * FROM versions WHERE id=?", row.publishedId);
     return { ...serialize({ ...row, content: version.content, title: version.title }), updatedAt: version.createdAt };
   });
+  app.get("/api/canvases/:id", async (request) => serialize(canvas(request.user, request.params.id, { owner: true })));
   app.put("/api/canvases/:id", async (request) => {
     const body = z.object({ projectId: z.string(), title: name, revision: z.number().int().nonnegative(), content: contentSchema }).parse(request.body);
-    const content = cleanContent(body.content), id = name.regex(/^[a-zA-Z0-9_-]+$/).parse(request.params.id);
+    let content = cleanContent(body.content);
+    const id = name.regex(/^[a-zA-Z0-9_-]+$/).parse(request.params.id);
     return transaction(db, () => {
       member(request.user, body.projectId, true);
       const existing = get("SELECT * FROM canvases WHERE id=?", id);
       if (existing) {
         canvas(request.user, id, { owner: true, write: true });
         if (existing.projectId !== body.projectId) fail(400, "不支持跨项目移动");
-        if (existing.revision !== body.revision) fail(409, "服务器已有更新，当前草稿未覆盖服务器；请导出草稿后刷新比较");
+        if (existing.revision !== body.revision) content = rebaseTaskEdits(db, id, body.revision, content, existing.revision);
         run("UPDATE canvases SET title=?,content=?,revision=revision+1,updatedAt=? WHERE id=?", body.title, JSON.stringify(content), now(), id);
       } else {
         if (body.revision !== 0) fail(409, "画布版本不存在");
         run("INSERT INTO canvases(id,projectId,ownerId,title,content,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)", id, body.projectId, request.user.id, body.title, JSON.stringify(content), now(), now());
       }
       refs(request.user, id, content);
-      return { revision: get("SELECT revision FROM canvases WHERE id=?", id).revision, number: canvasNumber(id) };
+      return { revision: get("SELECT revision FROM canvases WHERE id=?", id).revision, number: canvasNumber(id), content };
     });
   });
   app.post("/api/canvases/:id/publish", async (request) => transaction(db, () => {
@@ -321,7 +324,8 @@ export async function createApp(options = {}) {
     await app.register(serveStatic, { root: webRoot });
     app.setNotFoundHandler((request, reply) => request.url.startsWith("/api/") ? reply.code(404).send({ message: "接口不存在" }) : reply.sendFile("index.html"));
   }
-  app.addHook("onClose", async () => db.close());
   await registerModels(app);
+  const tasks = registerCanvasTasks(app, { canvas, refs, canReadFile, serialize, filesDir, cookieName, ...options.tasks });
+  app.addHook("onClose", async () => { await tasks.close(); db.close(); });
   return app;
 }

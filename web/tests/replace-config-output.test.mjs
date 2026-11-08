@@ -24,6 +24,8 @@ function setup({ fail = false, count = 1, beforeReturn = () => {}, referenced = 
         nodesRef: { current: nodes }, connectionsRef: { current: connections },
         generationRequestsRef: { current: new Map() },
         pipelineRunRef: { current: null },
+        backgroundNodeRunning: () => false,
+        submitBackground: async () => { throw new Error('Unexpected background dispatch in local-model regression'); },
         historyCommitTimerRef: { current: null }, historyRef: { current: { past: [], future: [] } }, lastHistoryRef: { current: null },
         beginNotification: (id, details) => (outcome) => { context.notificationOutcome = outcome; context.notificationDetails = { ...details }; },
         effectiveConfig: {}, useCallback: (fn) => fn, isAiConfigReady: () => true, openConfigDialog: () => {},
@@ -64,6 +66,31 @@ function setup({ fail = false, count = 1, beforeReturn = () => {}, referenced = 
     vm.runInContext(stripTypeScriptTypes(undoRedo) + '\nglobalThis.undo = undoCanvas; globalThis.redo = redoCanvas;', context);
     return { context, nodes, connections, calls, notices };
 }
+
+test('fills a preconnected empty output and preserves downstream edges and undo', async () => {
+    const { context, connections, calls } = setup();
+    context.nodesRef.current[1].metadata = {};
+    await context.replace('config', 'output');
+    assert.equal(calls.length, 1);
+    assert.equal(context.nodesRef.current.length, 5);
+    assert.equal(context.nodesRef.current[1].metadata.content, 'new-image-1');
+    assert.equal(context.connectionsRef.current, connections);
+    context.undo();
+    assert.deepEqual(context.nodesRef.current[1].metadata, {});
+});
+
+test('server replacement submits background work without invoking foreground generation', async () => {
+    const { context, calls } = setup();
+    const localConfig = context.buildGenerationConfig;
+    context.buildGenerationConfig = () => ({ ...localConfig(), modelSource: 'server' });
+    let submitted;
+    context.submitBackground = async (steps) => { submitted = steps; };
+    await context.replace('config', 'output');
+    assert.equal(submitted[0].nodeId, 'config');
+    assert.equal(submitted[0].targetId, 'output');
+    assert.equal(calls.length, 0);
+    assert.equal(context.nodesRef.current.find((node) => node.id === 'output').metadata.content, 'old');
+});
 
 test('replaces only explicit output; preserves topology/position; next downstream run reads new image; undo/redo', async () => {
     const { context, nodes, connections, calls } = setup({ referenced: true, count: 2 });

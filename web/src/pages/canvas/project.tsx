@@ -1,3 +1,5 @@
+import { mergeCanvas } from "../../../../server/src/task-merge.js";
+import { useBackgroundTasks, taskActive, taskStatus } from "./hooks/use-background-tasks";
 import { trackCanvasRun } from "@/services/api/canvas-usage";
 import CanvasViewer from "./viewer";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -7,7 +9,7 @@ import { Group, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
-import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
+import { requestEdit, requestGeneration, requestImageQuestion, prepareBackgroundImage } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { createVideoGenerationTask, isVideoTaskFailed, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -22,7 +24,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
-import { App, Button, Modal } from "antd";
+import { App, Button, Drawer, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
@@ -51,7 +53,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { useAgentStore } from "@/stores/use-agent-store";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { useCanvasStore, onCanvasRemoteChange } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -258,6 +260,11 @@ function InfiniteCanvasPage() {
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    const background = useBackgroundTasks(projectId, projectLoaded);
+    const { submit: submitTask, cancel: cancelTask } = background;
+    const [tasksOpen, setTasksOpen] = useState(false);
+    const submittingTask = useRef(false);
+    const backgroundNodeRunning = useCallback((nodeId: string) => background.tasks.some((task) => taskActive(task) && task.steps.some((step) => step.nodeId === nodeId || step.targetId === nodeId)), [background.tasks]);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -315,6 +322,51 @@ function InfiniteCanvasPage() {
         }),
         [activeChatId, backgroundMode, chatSessions, showImageInfo],
     );
+
+    useEffect(() => onCanvasRemoteChange((changedId, before, after) => {
+        if (changedId !== projectId || !projectLoaded) return;
+        const base = { nodes: before.nodes, connections: before.connections };
+        const remote = { nodes: after.nodes, connections: after.connections };
+        const next = mergeCanvas(base, { nodes: nodesRef.current, connections: connectionsRef.current }, remote);
+        // Rebase ordinary undo history; replacement itself has durable undo in the task panel.
+        const rebaseHistory = (entries: CanvasHistoryEntry[]) => entries.flatMap((entry) => {
+            try { return [{ ...entry, ...mergeCanvas(base, { nodes: entry.nodes, connections: entry.connections }, remote) }]; }
+            catch { return []; }
+        });
+        historyRef.current = { past: rebaseHistory(historyRef.current.past), future: rebaseHistory(historyRef.current.future) };
+        if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
+        historyCommitTimerRef.current = null;
+        lastHistoryRef.current = { ...createHistoryEntry(), ...next };
+        nodesRef.current = next.nodes; connectionsRef.current = next.connections;
+        setNodes(next.nodes); setConnections(next.connections);
+        setHistoryState({ canUndo: historyRef.current.past.length > 0, canRedo: historyRef.current.future.length > 0 });
+    }), [createHistoryEntry, projectId, projectLoaded]);
+
+    const submitBackground = useCallback(async (steps: { nodeId: string; targetId?: string }[], entryId?: string, prompt?: string) => {
+        if (submittingTask.current) return;
+        submittingTask.current = true;
+        try {
+            updateProject(projectId, { nodes: nodesRef.current, connections: connectionsRef.current });
+            await useCanvasStore.getState().syncProject(projectId);
+            if (entryId) steps = planPipeline(entryId, nodesRef.current, connectionsRef.current);
+            const prepared = steps.map((step, index) => {
+                const node = nodesRef.current.find((item) => item.id === step.nodeId);
+                if (!node || node.type !== CanvasNodeType.Config) throw new Error("生成配置不存在");
+                const config = buildGenerationConfig(effectiveConfig, node, "image");
+                if (config.modelSource !== "server" || !isAiConfigReady(config, config.model)) throw new Error("后台流水线需要每一步都选择可用的服务器图片模型。");
+                const pendingOutputIds = new Set(steps.slice(0, index).flatMap((previous) => previous.targetId ? [previous.targetId] : []));
+                // Include planned upstream images in prompt/reference assembly before they have content.
+                const inputNodes = nodesRef.current.map((input) => pendingOutputIds.has(input.id) && !input.metadata?.content
+                    ? { ...input, metadata: { ...input.metadata, content: `pipeline-output:${input.id}` } } : input);
+                const context = buildNodeGenerationContext(step.nodeId, inputNodes, connectionsRef.current, prompt ?? node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
+                if (!context.prompt.trim()) throw new Error("请填写提示词或连接提示词节点。");
+                return { ...step, ...prepareBackgroundImage(config, context.prompt, context.referenceImages, pendingOutputIds) };
+            });
+            await submitTask(prepared, entryId);
+            message.success("已提交后台任务，关闭页面后仍会执行；可在顶部“后台任务”中查看。");
+        } catch (error) { message.error(error instanceof Error ? error.message : "后台任务提交失败，请先查看后台任务列表再重试"); }
+        finally { submittingTask.current = false; }
+    }, [effectiveConfig, isAiConfigReady, message, projectId, submitTask, updateProject]);
 
     const cleanupCanvasFiles = useCallback(
         (extra?: unknown) => {
@@ -453,10 +505,13 @@ function InfiniteCanvasPage() {
                 okText: t("canvas.projectPage.stop"),
                 cancelText: t("canvas.projectPage.continue"),
                 okButtonProps: { danger: true },
-                onOk: () => stopGenerationByRunningId(nodeId),
+                onOk: () => {
+                    const task = background.tasks.find((item) => taskActive(item) && item.steps.some((step) => step.nodeId === nodeId || step.targetId === nodeId));
+                    return task ? cancelTask(task.id) : stopGenerationByRunningId(nodeId);
+                },
             });
         },
-        [modal, stopGenerationByRunningId, t],
+        [background.tasks, cancelTask, modal, stopGenerationByRunningId, t],
     );
 
     useEffect(() => {
@@ -2349,13 +2404,15 @@ function InfiniteCanvasPage() {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         const target = nodesRef.current.find((node) => node.id === targetId);
         const isConnected = () => connectionsRef.current.some((edge) => edge.fromNodeId === nodeId && edge.toNodeId === targetId);
-        if (source?.type !== CanvasNodeType.Config || (source.metadata?.generationMode || "image") !== "image" || target?.type !== CanvasNodeType.Image || !target.metadata?.content || !isConnected()) return;
+        if (source?.type !== CanvasNodeType.Config || (source.metadata?.generationMode || "image") !== "image" || target?.type !== CanvasNodeType.Image || !isConnected()) return;
         if (generationRequestsRef.current.has(nodeId) || generationRequestsRef.current.has(targetId)) return;
         const config = buildGenerationConfig(effectiveConfig, source, "image");
         if (!isAiConfigReady(config, config.model)) {
             openConfigDialog(true);
             return;
         }
+        if (backgroundNodeRunning(nodeId) || backgroundNodeRunning(targetId)) { message.info("该节点已有后台任务，请等待完成或停止。"); return; }
+        if (config.modelSource === "server" && !pipelineController) { await submitBackground([{ nodeId, targetId }]); return; }
         const controller = startGenerationRequest(nodeId, nodeId, nodeId, pipelineController);
         startGenerationRequest(targetId, nodeId, nodeId, controller);
         const details = generationDetails("image", config, target.title || targetId);
@@ -2428,14 +2485,19 @@ function InfiniteCanvasPage() {
             finishGenerationRequest(nodeId, controller);
             setRunningNodeId((current) => current === nodeId ? null : current);
         }
-    }, [beginNotification, createHistoryEntry, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t]);
+    }, [backgroundNodeRunning, submitBackground, beginNotification, createHistoryEntry, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t]);
 
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, execution?: { controller: AbortController; onSuccess: () => void }) => {
             if (pipelineRunRef.current && !execution) { message.info("请等待流水线完成或先停止流水线。"); return; }
             if (execution?.controller.signal.aborted) return;
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+            if (backgroundNodeRunning(nodeId)) { message.info("该节点已有后台任务，请等待完成或停止。"); return; }
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
+            if (!execution && sourceNode?.type === CanvasNodeType.Config && mode === "image" && generationConfig.modelSource === "server") {
+                await submitBackground([{ nodeId }], undefined, prompt);
+                return;
+            }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 if (generationConfig.modelSource === "server") { message.warning("服务器模型不可用，请刷新清单并重新选择"); return; }
                 openConfigDialog(true);
@@ -2882,7 +2944,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [beginNotification, completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [backgroundNodeRunning, submitBackground, beginNotification, completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
     );
     const stopPipeline = useCallback(() => {
         const run = pipelineRunRef.current;
@@ -2897,6 +2959,15 @@ function InfiniteCanvasPage() {
     }, [nodes, stopPipeline]);
 
     const handleRunPipeline = useCallback(async (entryId: string) => {
+        try {
+            const steps = planPipeline(entryId, nodesRef.current, connectionsRef.current);
+            if (steps.some((step) => backgroundNodeRunning(step.nodeId))) { message.info("流水线已有后台任务，请等待完成或停止。"); return; }
+            if (steps.some((step) => buildGenerationConfig(effectiveConfig, nodesRef.current.find((node) => node.id === step.nodeId), "image").modelSource === "server")) {
+                if (pipelineRunRef.current || generationRequestsRef.current.size) { message.info("请先等待当前生成完成。"); return; }
+                await submitBackground(steps, entryId);
+                return;
+            }
+        } catch (error) { message.error(String(error)); return; }
         if (pipelineRunRef.current || generationRequestsRef.current.size) {
             message.info("请先等待当前生成完成。");
             return;
@@ -2941,7 +3012,7 @@ function InfiniteCanvasPage() {
                 pipelineRunRef.current = null;
             }
         }
-    }, [effectiveConfig, handleGenerateNode, handleReplaceOutput, isAiConfigReady, message, openConfigDialog, stopGenerationByRunningId]);
+    }, [backgroundNodeRunning, submitBackground, effectiveConfig, handleGenerateNode, handleReplaceOutput, isAiConfigReady, message, openConfigDialog, stopGenerationByRunningId]);
 
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -3278,7 +3349,7 @@ function InfiniteCanvasPage() {
                 <CanvasNodePromptPanel
                     node={panelNode}
                     nodes={nodes}
-                    isRunning={runningNodeId === panelNode.id}
+                    isRunning={runningNodeId === panelNode.id || backgroundNodeRunning(panelNode.id)}
                     mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || EMPTY_REFERENCES}
                     connectedNodes={connectedNodesByNodeId.get(panelNode.id) || []}
                     onPromptChange={handleNodePromptChange}
@@ -3294,30 +3365,34 @@ function InfiniteCanvasPage() {
                     }}
                 />
             ),
-        [configInputsById, confirmStopGeneration, connectedNodesByNodeId, disconnectNodeReference, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, nodes, renderPluginPanel, runningNodeId, startNodeReferenceSelection],
+        [backgroundNodeRunning, configInputsById, confirmStopGeneration, connectedNodesByNodeId, disconnectNodeReference, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, nodes, renderPluginPanel, runningNodeId, startNodeReferenceSelection],
     );
 
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => contentNode.type === CanvasNodeType.DingTalk ? (
             <CanvasDingTalkNodePanel node={contentNode}
                 sources={connections.filter((edge) => edge.toNodeId === contentNode.id).flatMap((edge) => nodes.filter((node) => node.id === edge.fromNodeId && node.type === CanvasNodeType.Config).map((node) => node.title))}
-                status={deliveries[contentNode.id]?.message} onChange={handleConfigNodeChange}
+                status={background.tasks.flatMap((task) => task.steps.flatMap((step) => step.notifications || [])).find((item) => item.nodeId === contentNode.id)?.message || deliveries[contentNode.id]?.message} onChange={handleConfigNodeChange}
                 onRetry={deliveries[contentNode.id]?.retryable ? () => retryNotification(contentNode.id) : undefined}
                 onCheck={deliveries[contentNode.id] ? () => checkNotification(contentNode.id) : undefined} />
         ) : contentNode.type === CanvasNodeType.Pipeline ? (
             <CanvasPipelineNodePanel
-                running={pipelineState?.entryId === contentNode.id && pipelineState.running}
+                running={background.tasks.some((task) => task.entryId === contentNode.id && taskActive(task)) || (pipelineState?.entryId === contentNode.id && pipelineState.running)}
                 disabled={Boolean(pipelineState?.running || runningNodeId)}
-                status={pipelineState?.entryId === contentNode.id ? pipelineState.status : ""}
+                status={background.tasks.find((task) => task.entryId === contentNode.id)?.message || (background.tasks.find((task) => task.entryId === contentNode.id && taskActive(task)) ? "后台执行中，可关闭页面" : pipelineState?.entryId === contentNode.id ? pipelineState.status : "")}
                 onRun={() => void handleRunPipeline(contentNode.id)}
-                onStop={stopPipeline}
+                onStop={() => {
+                    const task = background.tasks.find((item) => item.entryId === contentNode.id && taskActive(item));
+                    if (task) void cancelTask(task.id).catch((error) => message.error(String(error)));
+                    else stopPipeline();
+                }}
             />
         ) : (
             <CanvasConfigNodePanel
                 node={contentNode}
-                outputImages={nodes.filter((node) => node.type === CanvasNodeType.Image && node.metadata?.content && connections.some((edge) => edge.fromNodeId === contentNode.id && edge.toNodeId === node.id))}
+                outputImages={nodes.filter((node) => node.type === CanvasNodeType.Image && connections.some((edge) => edge.fromNodeId === contentNode.id && edge.toNodeId === node.id))}
                 onReplaceOutput={handleReplaceOutput}
-                isRunning={runningNodeId === contentNode.id}
+                isRunning={runningNodeId === contentNode.id || backgroundNodeRunning(contentNode.id)}
                 inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
@@ -3328,7 +3403,7 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [retryNotification, checkNotification, deliveries, configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, handleRunPipeline, nodes, pipelineState, runningNodeId, stopPipeline],
+        [background.tasks, backgroundNodeRunning, cancelTask, message, retryNotification, checkNotification, deliveries, configInputsById, confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleReplaceOutput, handleRunPipeline, nodes, pipelineState, runningNodeId, stopPipeline],
     );
 
     const hoverPreviewNode = hoverPreviewNodeId ? nodeById.get(hoverPreviewNodeId) || null : null;
@@ -3358,6 +3433,7 @@ function InfiniteCanvasPage() {
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onHoverNode={setHoverPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
                 <CanvasTopBar
+                    taskAction={<Button type="text" size="small" onClick={() => setTasksOpen(true)}>后台任务{background.tasks.filter(taskActive).length ? ` (${background.tasks.filter(taskActive).length})` : ""}{background.error ? " · 待同步" : ""}</Button>}
                     title={currentProject?.title || t("canvas.projectPage.untitledCanvas")}
                     titleDraft={titleDraft}
                     isTitleEditing={titleEditing}
@@ -3381,6 +3457,28 @@ function InfiniteCanvasPage() {
                     onToggleAgent={toggleAgentPanel}
                 />
 
+                <Drawer title="后台任务" open={tasksOpen} onClose={() => setTasksOpen(false)}>
+                    <p className="mb-3 text-sm opacity-70">服务器图片配置和全服务器图片流水线在后台执行。停止后不会继续下一步；已提交的供应商任务可能仍计费。</p>
+                    <Button onClick={() => void background.refresh()}>刷新任务与画布</Button>
+                    {background.error && <p role="alert" className="my-3 text-sm">{background.error}</p>}
+                    {!background.tasks.length && <p className="mt-4 text-sm opacity-60">此画布暂无后台任务。</p>}
+                    {background.tasks.map((task) => <div key={task.id} className="mt-4 border-t border-current/15 pt-3 text-sm">
+                        <div className="flex items-center justify-between gap-2"><strong>{task.entryId ? "流水线" : task.steps[0]?.title} · {taskStatus(task.state)}</strong>
+                            {taskActive(task) && <Button size="small" danger onClick={() => void cancelTask(task.id).catch((error) => message.error(String(error)))}>停止</Button>}
+                        </div>
+                        <p className="mt-1 opacity-60">{new Date(task.createdAt).toLocaleString()}</p>
+                        {task.message && <p className="my-2">{task.message}</p>}
+                        {task.steps.map((step) => <div key={step.nodeId} className="mt-3">
+                            <div>{step.title}：{taskStatus(step.state)} {step.message}</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                {step.outputs.map((image, index) => <a key={image.id} href={image.content} download>下载结果 {index + 1}</a>)}
+                                {step.canUndo && !taskActive(task) && <Button type="text" size="small" onClick={() => void background.undo(task.id, step.nodeId).catch((error) => message.error(String(error)))}>撤销替换</Button>}
+                                {step.undone && <span className="opacity-60">已撤销替换</span>}
+                            </div>
+                            {step.notifications?.map((item) => <p key={item.nodeId} className="mt-1 opacity-70">钉钉：{item.message}</p>)}
+                        </div>)}
+                    </div>)}
+                </Drawer>
                 <InfiniteCanvas
                     containerRef={containerRef}
                     viewport={viewport}

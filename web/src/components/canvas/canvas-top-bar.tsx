@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { CanvasSaveStatus } from "./canvas-save-status";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
@@ -14,6 +15,7 @@ import { canvasCategoryOptions, type CanvasCategory } from "@/lib/canvas/canvas-
 import { DOCS_URL } from "@/constant/env";
 
 export function CanvasTopBar({
+    taskAction,
     title,
     titleDraft,
     isTitleEditing,
@@ -36,6 +38,7 @@ export function CanvasTopBar({
     compactAgentStatus,
     onToggleAgent,
 }: {
+    taskAction?: ReactNode;
     title: string;
     titleDraft: string;
     isTitleEditing: boolean;
@@ -149,6 +152,7 @@ export function CanvasTopBar({
                         )}
                     </div>
                     <CanvasSaveStatus />
+                    {taskAction}
                     <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} />
                 </div>
 

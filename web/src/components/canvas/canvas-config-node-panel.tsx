@@ -44,6 +44,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
     const selectedOutputId = mode === "image" ? replacementId : "";
+    const emptyOutputId = outputImages.find((image) => !image.metadata?.content && !image.metadata?.storageKey)?.id;
+    useEffect(() => {
+        if (mode === "image" && node.metadata?.replacementOutputId === undefined && emptyOutputId && !isRunning) {
+            onConfigChange(node.id, { replacementOutputId: emptyOutputId });
+        }
+    }, [mode, node.id, node.metadata?.replacementOutputId, emptyOutputId, isRunning, onConfigChange]);
+    const fillingOutput = outputImages.some((image) => image.id === selectedOutputId && !image.metadata?.content && !image.metadata?.storageKey);
     const missingOutput = Boolean(selectedOutputId && !outputImages.some((image) => image.id === selectedOutputId));
 
     return (
@@ -138,11 +145,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                         style={{ background: theme.node.fill, color: theme.node.text }}
                         value={selectedOutputId}
                         disabled={isRunning}
-                        onChange={(event) => onConfigChange(node.id, { replacementOutputId: event.target.value || undefined })}
+                        onChange={(event) => onConfigChange(node.id, { replacementOutputId: event.target.value })}
                     >
                         <option value="">新增输出</option>
                         {missingOutput && <option value={selectedOutputId} disabled>替换目标已断开，请重新选择</option>}
-                        {outputImages.map((image, index) => <option key={image.id} value={image.id}>替换 {index + 1}. {image.title || "图片"} · {image.id.slice(-6)}</option>)}
+                        {outputImages.map((image, index) => <option key={image.id} value={image.id}>{image.metadata?.content || image.metadata?.storageKey ? "替换" : "填入"} {index + 1}. {image.title || "图片"} · {image.id.slice(-6)}</option>)}
                     </select>
                 )}
                 <Button
@@ -163,7 +170,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                         ) : (
                             <>
                                 <Play className="size-4" />
-                                <span>{selectedOutputId ? "生成并替换" : t("canvas.configNode.generate")}</span>
+                                <span>{selectedOutputId ? fillingOutput ? "生成到此节点" : "生成并替换" : t("canvas.configNode.generate")}</span>
                             </>
                         )}
                     </span>

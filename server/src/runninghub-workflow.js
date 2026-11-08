@@ -18,7 +18,7 @@ export function runningHubWorkflowChoices(input) {
     try { workflow = JSON.parse(workflow); } catch { invalid("工作流 JSON 格式不正确"); }
   }
   const node = z.object({ class_type: z.string(), inputs: z.record(z.string(), z.unknown()), _meta: z.object({ title: z.string().optional() }).optional() });
-  const parsed = z.record(z.string().regex(/^\d+$/), node).safeParse(workflow);
+  const parsed = z.record(z.string().regex(/^\d+(?::\d+)*$/), node).safeParse(workflow);
   if (!parsed.success || !Object.keys(parsed.data).length) invalid("请导入 API 格式工作流 JSON，不能使用编辑器格式");
   const prompts = [], images = [], outputs = [];
   for (const [nodeId, item] of Object.entries(parsed.data)) {

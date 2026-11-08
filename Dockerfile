@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install --cache-dir=/
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
+COPY server/src/task-merge.js /app/server/src/task-merge.js
 RUN bun run build
 
 # 运行镜像：只启动静态前端，AI 请求由浏览器前台直连用户自己的接口。

@@ -22,7 +22,7 @@ export function planPipeline(entryId: string, nodes: CanvasNodeData[], connectio
         const next: string[] = [];
         if (targetId) {
             const target = byId.get(targetId);
-            if (target?.type !== CanvasNodeType.Image || !target.metadata?.content || !downstream(id).includes(targetId)) throw new Error(`「${node.title}」的替换目标已失效，请重新选择。`);
+            if (target?.type !== CanvasNodeType.Image || !downstream(id).includes(targetId)) throw new Error(`「${node.title}」的替换目标已失效，请重新选择。`);
             if (outputOwners.has(targetId) && outputOwners.get(targetId) !== id) throw new Error("多个步骤不能替换同一个输出图片，请明确输出归属。");
             outputOwners.set(targetId, id);
             next.push(...downstream(targetId).filter((child) => byId.get(child)?.type === CanvasNodeType.Config));

@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache sed -i 's#https://registr
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
+COPY server/src/task-merge.js /app/server/src/task-merge.js
 RUN bun run build
 
 # 运行镜像：静态前端与 nginx.conf 中固定上游的同源 API 代理。
