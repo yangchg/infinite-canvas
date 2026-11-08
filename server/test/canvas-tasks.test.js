@@ -285,3 +285,70 @@ test('three-way merge preserves disjoint edits and blob identities, rejects targ
     const merged=mergeCanvas(base,local,remote);assert.equal(merged.nodes[0].position.x,90);assert.equal(merged.nodes[0].metadata.storageKey,'new');
     local.nodes[0].metadata.storageKey='user-new';assert.throws(()=>mergeCanvas(base,local,remote),/同一内容/);
 });
+
+async function useRunningHub(f, mapping, configId = 'a') {
+  const config = { name: 'RH', model: '123', apiFormat: 'runninghub', capability: 'image', enabled: true, runninghub: mapping };
+  f.db().prepare('INSERT INTO shared_models VALUES(?,?)').run('rh', JSON.stringify(config));
+  f.db().prepare('INSERT INTO provider_settings VALUES(?,?)').run('runninghub', 'test-key');
+  f.content.nodes.find((n) => n.id === configId).metadata.model = 'server-rh::123';
+}
+
+test('RunningHub multi-output pauses for selection then feeds selected bytes without rewiring', { timeout: 10000 }, async (t) => {
+  const calls = [];
+  const f = await fixture(t, async (...args) => { calls.push(args); return args[0].apiFormat === 'runninghub' ? [png, png] : png; });
+  await useRunningHub(f, { inputs: [], outputNodes: ['7'] });
+  f.content.nodes.find((n) => n.id === 'a').metadata.confirmImageSelection = true;
+  f.content.nodes.find((n) => n.id === 'out').metadata = {};
+  assert.equal((await f.save(f.content, 1)).statusCode, 200);
+  const result = await f.submit([{ ...f.step('a', 'out'), model: 'server-rh::123', prompt: '' }, f.step('b', undefined, [{ nodeId: 'out' }])], 'start', randomUUID(), 2);
+  assert.equal(result.statusCode, 202, result.body);
+  const [waiting] = await f.wait();
+  assert.equal(waiting.state, 'waiting_selection');
+  assert.equal(waiting.steps[0].outputs.length, 2);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0][1].runninghubInputs, {});
+  const selected = waiting.steps[0].outputs[1];
+  assert.equal((await f.send('POST', '/tasks/' + waiting.id + '/select/a', { imageId: selected.id })).statusCode, 200);
+  const [done] = await f.wait();
+  assert.equal(done.state, 'success');
+  assert.deepEqual(calls[1][2][0].bytes, png);
+  assert.deepEqual((await f.read()).nodes.at(-1).metadata.references, ['/api/files/' + encodeURIComponent(selected.storageKey)]);
+});
+
+test('RunningHub binds pending upstream image and freezes named text inputs; retry reuses saved input', { timeout: 10000 }, async (t) => {
+  const calls = [];
+  const f = await fixture(t, async (...args) => { calls.push(args); return args[0].apiFormat === 'runninghub' ? [png, png] : png; });
+  await useRunningHub(f, { inputs: [
+    { id: 'image', nodeId: '8', field: 'image', type: 'image', required: true, label: '图片' },
+    { id: 'text', nodeId: '9', field: 'text', type: 'text', required: true, label: '文本' },
+  ], outputNodes: ['7'] }, 'b');
+  const b = f.content.nodes.find((n) => n.id === 'b');
+  b.metadata.runninghubBindings = { image: { mode: 'node', nodeId: 'out' }, text: { mode: 'text', value: 'frozen' } };
+  f.content.nodes.find((n) => n.id === 'out').metadata = {};
+  f.content.nodes = f.content.nodes.filter((n) => n.id !== 'ignored');
+  f.content.connections = f.content.connections.filter((e) => e.toNodeId !== 'ignored');
+  b.metadata.replacementOutputId = 'final';
+  assert.equal((await f.save(f.content, 1)).statusCode, 200);
+  const response = await f.submit([f.step('a', 'out'), { ...f.step('b', 'final'), model: 'server-rh::123', prompt: '', references: [{ nodeId: 'spoof', storageKey: 'spoof' }] }], 'start', randomUUID(), 2);
+  assert.equal(response.statusCode, 202, response.body);
+  const [task] = await f.wait();
+  assert.equal(task.state, 'success');
+  assert.deepEqual(calls[1][1].runninghubInputs, { image: { imageIndex: 0 }, text: 'frozen' });
+  assert.deepEqual(calls[1][2][0].bytes, png);
+  const current = await f.read();
+  assert.equal(current.nodes.find((n) => n.id === 'final').metadata.images.length, 2);
+  current.nodes.find((n) => n.id === 'b').metadata.runninghubBindings.text.value = 'changed';
+  assert.equal((await f.save(current, current.revision)).statusCode, 200);
+  const payload = { targetId: 'final', runId: randomUUID(), revision: current.revision + 1 };
+  const path = '/tasks/' + task.id + '/retry/b';
+  assert.equal((await f.send('POST', path, payload, 'other')).statusCode, 403);
+  const retry = await f.send('POST', path, payload);
+  assert.equal(retry.statusCode, 202, retry.body);
+  const tasks = await f.wait((items) => items.find((item) => item.id === payload.runId)?.state === 'success');
+  assert.equal(tasks.find((item) => item.id === payload.runId).steps.length, 1);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2][1].runninghubInputs.text, 'frozen');
+  assert.deepEqual(calls[2][2][0].bytes, png);
+  assert.equal((await f.send('POST', path, payload)).statusCode, 200);
+  assert.equal(calls.length, 3);
+});

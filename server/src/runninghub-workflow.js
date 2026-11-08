@@ -20,18 +20,24 @@ export function runningHubWorkflowChoices(input) {
   const node = z.object({ class_type: z.string(), inputs: z.record(z.string(), z.unknown()), _meta: z.object({ title: z.string().optional() }).optional() });
   const parsed = z.record(z.string().regex(/^\d+(?::\d+)*$/), node).safeParse(workflow);
   if (!parsed.success || !Object.keys(parsed.data).length) invalid("请导入 API 格式工作流 JSON，不能使用编辑器格式");
-  const prompts = [], images = [], outputs = [];
+  const prompts = [], advancedTexts = [], images = [], outputs = [];
   for (const [nodeId, item] of Object.entries(parsed.data)) {
     const label = `${item._meta?.title || item.class_type}（${nodeId}）`;
     for (const [field, value] of Object.entries(item.inputs)) {
       if (typeof value !== "string") continue;
       const choice = { nodeId, field, label: `${label} · ${field}` };
       if (field === "image" && /LoadImage/i.test(item.class_type)) images.push(choice);
-      else if (["text", "prompt", "positive", "value", "string"].includes(field)) prompts.push(choice);
+      else if (["text", "text_g", "text_l", "prompt", "positive", "negative", "value", "string"].includes(field)) {
+        // Field names alone also match expressions and cached display output.
+        if (/math|expression|formula|show|display|preview/i.test(item.class_type)) continue;
+        const explicitPrompt = ["prompt", "positive", "negative"].includes(field) ||
+          (/CLIPTextEncode|TextEncode/i.test(item.class_type) && ["text", "text_g", "text_l"].includes(field));
+        (explicitPrompt ? prompts : advancedTexts).push(choice);
+      }
     }
     if (["SaveImage", "PreviewImage"].includes(item.class_type)) outputs.push({ nodeId, label });
   }
-  return { prompts, images, outputs };
+  return { prompts, advancedTexts, images, outputs };
 }
 
 export async function readRunningHubWorkflow(workflowId, apiKey, signal, fetcher = fetch) {

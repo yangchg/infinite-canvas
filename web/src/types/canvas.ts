@@ -56,6 +56,9 @@ export type CanvasNodeMetadata = {
     generationMode?: CanvasGenerationMode;
     replacementOutputId?: string;
     confirmImageSelection?: boolean;
+    backgroundTaskId?: string;
+    backgroundStepId?: string;
+    runninghubBindings?: Record<string, { mode: "node"; nodeId: string } | { mode: "text"; value: string } | { mode: "default" }>;
     notificationChannel?: string;
     notificationUsers?: string[];
     notifySuccess?: boolean;

@@ -1,3 +1,4 @@
+import { CanvasRunningHubInputs } from "./canvas-runninghub-inputs";
 import { useEffect, type CSSProperties } from "react";
 import { configForModelSource, useServerModelStore } from "@/stores/use-server-model-store";
 import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
@@ -21,13 +22,14 @@ type CanvasConfigNodePanelProps = {
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     outputImages: CanvasNodeData[];
+    incomingNodes: CanvasNodeData[];
     onReplaceOutput: (nodeId: string, targetId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
     onReviewImages?: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, outputImages, onReplaceOutput, onStop, onComposerToggle, onReviewImages }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, outputImages, incomingNodes, onReplaceOutput, onStop, onComposerToggle, onReviewImages }: CanvasConfigNodePanelProps) {
     const replacementId = node.metadata?.replacementOutputId || "";
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
@@ -43,7 +45,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
-    const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
+    const canGenerate = isRunningHub || hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
     const selectedOutputId = mode === "image" ? replacementId : "";
     const emptyOutputId = outputImages.find((image) => !image.metadata?.content && !image.metadata?.storageKey)?.id;
     useEffect(() => {
@@ -106,7 +108,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </div>
             </div>
 
-            <div className="mb-2 flex flex-wrap gap-1.5">
+            {!isRunningHub && <div className="mb-2 flex flex-wrap gap-1.5">
                 <InputChip label={t("canvas.configNode.prompt")} value={t("canvas.configNode.items", { count: inputSummary.textCount })} style={chipStyle} />
                 <InputChip label={t("canvas.configNode.references")} value={t("canvas.configNode.images", { count: inputSummary.imageCount })} style={chipStyle} />
                 <InputChip label={t("canvas.configNode.videoReferences")} value={t("canvas.configNode.items", { count: inputSummary.videoCount })} style={chipStyle} />
@@ -115,7 +117,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     <Settings2 className="size-3.5" />
                     {t("canvas.configNode.compose")}
                 </button>
-            </div>
+            </div>}
 
             <div className="mb-2 flex cursor-default items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 <Segmented size="small" disabled={isRunning} value={source} options={[{ label: "本地模型", value: "local" }, { label: "服务器模型", value: "server" }]} onChange={(value) => onConfigChange(node.id, { modelSource: value as "local" | "server", model: "" })} />
@@ -123,11 +125,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
             </div>
             {source === "server" && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>{serverModels.error || (!config.models.length && !serverModels.loading ? "暂无服务器模型，请联系管理员配置" : "")}</div>}
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
-                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, ...(isRunningHubModel(model) ? { count: 1 } : {}) })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
+                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, runninghubBindings: {}, ...(isRunningHubModel(model) ? { count: 1 } : {}) })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
                     <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                 ) : mode === "image" && isRunningHub ? (
-                    <span className="text-xs">工作流尺寸 · 1 张</span>
+                    <span className="text-xs">按工作流运行 · 1 次</span>
                 ) : mode === "image" ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
@@ -137,7 +139,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 )}
             </div>
 
-            {isRunningHub && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>需要 1 张参考图。切换模型保留原提示词；若使用「组装提示词」，须输入 @ 并选中已连接的图片。修改后点击「开始生成」，旧结果的「重试」沿用原参数。图片将上传 RunningHub，使用服务器账号计费。</div>}
+            {isRunningHub && <CanvasRunningHubInputs node={node} incomingNodes={incomingNodes} mapping={serverModels.models.find((item) => config.model === `server-${item.id}::${item.model}`)?.runninghub} disabled={isRunning} onChange={onConfigChange} />}
             {mode === "image" && source === "server" && <div className="mb-2 text-xs" onMouseDown={(event) => event.stopPropagation()}>
                 <label className="flex cursor-pointer items-center gap-2">
                     <input type="checkbox" checked={Boolean(node.metadata?.confirmImageSelection)} disabled={isRunning} onChange={(event) => onConfigChange(node.id, { confirmImageSelection: event.target.checked })} />

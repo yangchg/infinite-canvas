@@ -4,15 +4,24 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import vm from 'node:vm';
 
-test('RunningHub dropdown keeps subgraph paths when selecting prompt and image fields', () => {
+test('workflow import preserves zero/multiple inputs and complete subgraph IDs', () => {
   const source = readFileSync(new URL('../src/pages/canvas/server-model-admin.tsx', import.meta.url), 'utf8');
-  const values = {};
-  const context = vm.createContext({ form: { setFieldValue: (path, value) => { values[path[1]] = value; } } });
-  const code = source.slice(source.indexOf('    const chooseInput ='), source.indexOf('    const isComfy ='));
-  vm.runInContext(stripTypeScriptTypes(code) + '\nglobalThis.choose = chooseInput;', context);
-  context.choose('prompt', '8144:8143:text');
-  context.choose('image', '5702:8090:1:image');
-  assert.deepEqual(values, { promptNode: '8144:8143', promptField: 'text', imageNode: '5702:8090:1', imageField: 'image' });
-  context.choose('prompt', '5622:value');
-  assert.equal(values.promptNode, '5622');
+  const start = source.indexOf('            form.setFieldsValue({ model: result.workflowId');
+  const code = source.slice(start, source.indexOf('            message.success', start));
+  const result = { workflowId: '123', images: [{ nodeId: '5702:8090:1', field: 'image', label: '图片' }, { nodeId: '8', field: 'image', label: '参考图' }], prompts: [], outputs: [{ nodeId: '9:1' }, { nodeId: '10' }] };
+  let values;
+  const context = vm.createContext({ result, form: { setFieldsValue: (value) => { values = JSON.parse(JSON.stringify(value)); } } });
+  const run = () => vm.runInContext(stripTypeScriptTypes(code), context);
+  run();
+  assert.equal(values.runninghub.inputs.length, 2);
+  assert.equal(values.runninghub.inputs[0].nodeId, '5702:8090:1');
+  assert.deepEqual(values.runninghub.outputNodes, ['9:1', '10']);
+  result.images = [];
+  run();
+  assert.deepEqual(values.runninghub.inputs, []);
+  result.prompts = [{ nodeId: '8144:8143', field: 'text', label: '正向' }, { nodeId: '3', field: 'value', label: '反向' }];
+  run();
+  assert.equal(values.runninghub.inputs.length, 2);
+  assert.equal(values.runninghub.inputs[0].nodeId, '8144:8143');
+  assert.equal(values.runninghub.inputs[0].required, false);
 });

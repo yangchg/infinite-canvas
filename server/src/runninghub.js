@@ -2,11 +2,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
-export const runningHubSchema = z.object({
-  promptNode: z.string().regex(/^\d+(?::\d+)*$/), promptField: z.string().min(1),
-  imageNode: z.string().regex(/^\d+(?::\d+)*$/), imageField: z.string().min(1),
-  outputNode: z.string().regex(/^\d+(?::\d+)*$/),
-});
+export { runningHubSchema } from './runninghub-inputs.js';
+import { runningHubSchema } from './runninghub-inputs.js';
 
 export function runningHubResultUrl(value) {
   const url = new URL(value);
@@ -19,10 +16,21 @@ export function runningHubResultUrl(value) {
 
 export async function generateRunningHub(config, form, signal, onSubmitted, fetcher = fetch, resumeTaskId) {
   const images = [...form.getAll("image"), ...form.getAll("image[]")];
-  if (images.length !== 1 || !(images[0] instanceof Blob) || !images[0].type.startsWith("image/")) fail(400, "草稿细化需要且仅支持 1 张参考图片");
-  if (Number(form.get("n") || 1) !== 1) fail(400, "草稿细化每次生成 1 张图片，请将生成数量设为 1");
-  const prompt = form.get("prompt");
-  if (typeof prompt !== "string" || !prompt.trim()) fail(400, "请输入草稿细化提示词");
+  const parsed = runningHubSchema.safeParse(config.runninghub);
+  if (!parsed.success) fail(400, '请管理员重新读取工作流并保存动态输入映射');
+  const mapping = parsed.data;
+  if (Number(form.get("n") || 1) !== 1) fail(400, 'RunningHub 每次执行 1 次工作流，输出数量由工作流决定');
+  let values;
+  try { values = z.record(z.string(), z.union([z.string(), z.object({ imageIndex: z.number().int().nonnegative() })])).parse(JSON.parse(form.get('runninghubInputs') || '{}')); }
+  catch { fail(400, '工作流输入格式错误'); }
+  for (const key of Object.keys(values)) if (!mapping.inputs.some((input) => input.id === key)) fail(400, '工作流输入映射已变化，请刷新模型');
+  for (const input of mapping.inputs) {
+    const value = values[input.id] ?? input.defaultValue;
+    if (input.required && (value === undefined || (typeof value === 'string' && !value.trim()))) fail(400, `请填写或绑定「${input.label}」`);
+    if (value === undefined) continue;
+    if (input.type === 'text' ? typeof value !== 'string' : typeof value !== 'object' || !(images[value.imageIndex] instanceof Blob) || !images[value.imageIndex].type.startsWith('image/')) fail(400, `「${input.label}」输入类型不正确`);
+    values[input.id] = value;
+  }
   if (!config.apiKey) fail(400, "请管理员配置 RunningHub API Key 后启用模型");
   const call = async (path, body) => {
     const multipart = body instanceof FormData;
@@ -41,17 +49,26 @@ export async function generateRunningHub(config, form, signal, onSubmitted, fetc
     }
     return result.data;
   };
-  const mapping = config.runninghub;
   let taskId = resumeTaskId;
   if (!taskId) {
-    const upload = new FormData();
-    upload.set("apiKey", config.apiKey); upload.set("fileType", "input"); upload.set("file", images[0], "draft.png");
-    const uploaded = check(await call("upload", upload));
-    if (!uploaded?.fileName) fail(502, "RunningHub 未返回上传文件名");
-    const task = check(await call("create", { workflowId: config.model, nodeInfoList: [
-      { nodeId: mapping.promptNode, fieldName: mapping.promptField, fieldValue: prompt },
-      { nodeId: mapping.imageNode, fieldName: mapping.imageField, fieldValue: uploaded.fileName },
-    ] }));
+    const uploadedImages = new Map(), nodeInfoList = [];
+    for (const input of mapping.inputs) {
+      let value = values[input.id];
+      if (value === undefined) continue;
+      if (input.type === 'image') {
+        const index = value.imageIndex;
+        if (!uploadedImages.has(index)) {
+          const upload = new FormData();
+          upload.set('apiKey', config.apiKey); upload.set('fileType', 'input'); upload.set('file', images[index], `input-${index}.png`);
+          const uploaded = check(await call('upload', upload));
+          if (!uploaded?.fileName) fail(502, 'RunningHub 未返回上传文件名');
+          uploadedImages.set(index, uploaded.fileName);
+        }
+        value = uploadedImages.get(index);
+      }
+      nodeInfoList.push({ nodeId: input.nodeId, fieldName: input.field, fieldValue: value });
+    }
+    const task = check(await call('create', { workflowId: config.model, nodeInfoList }));
     if (!task?.taskId) fail(502, "RunningHub 未返回任务 ID，请先检查平台任务记录");
     taskId = String(task.taskId);
     onSubmitted(taskId);
@@ -60,12 +77,17 @@ export async function generateRunningHub(config, form, signal, onSubmitted, fetc
     const result = await call("outputs", { taskId });
     if ([804, 813].includes(result.code)) { await delay(1000, undefined, { signal }); continue; }
     const outputs = check(result);
-    const output = Array.isArray(outputs) && outputs.find((item) => String(item.nodeId) === mapping.outputNode);
-    if (!output?.fileUrl) fail(502, "RunningHub 已完成，但指定输出节点没有返回图片，请检查输出节点 ID");
-    const response = await fetcher(runningHubResultUrl(output.fileUrl), { signal, redirect: "error" });
-    if (!response.ok || !response.headers.get("content-type")?.startsWith("image/")) {
-      await response.body?.cancel(); fail(502, "RunningHub 结果下载失败，请在平台任务记录中查看图片");
+    const selected = Array.isArray(outputs) ? mapping.outputNodes.flatMap((id) => outputs.filter((item) => String(item.nodeId) === id)) : [];
+    if (!selected.length || mapping.outputNodes.some((id) => !selected.some((item) => String(item.nodeId) === id))) fail(502, '指定输出节点没有返回图片，请检查输出映射');
+    const data = [];
+    for (const output of selected) {
+      if (!output.fileUrl) fail(502, 'RunningHub 输出缺少图片地址');
+      const response = await fetcher(runningHubResultUrl(output.fileUrl), { signal, redirect: 'error' });
+      if (!response.ok || !response.headers.get('content-type')?.startsWith('image/')) {
+        await response.body?.cancel(); fail(502, 'RunningHub 结果不是可下载的图片，请检查输出映射');
+      }
+      data.push({ b64_json: Buffer.from(await response.arrayBuffer()).toString('base64') });
     }
-    return { data: [{ b64_json: Buffer.from(await response.arrayBuffer()).toString("base64") }] };
+    return { data };
   }
 }

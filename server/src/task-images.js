@@ -8,6 +8,7 @@ export async function generateTaskImage(model, step, images, signal, submitted, 
   const form = new FormData();
   for (const [key, value] of Object.entries(input)) if (value != null) form.set(key, String(value));
   images.forEach((image, i) => form.append(images.length === 1 ? 'image' : 'image[]', new Blob([image.bytes], { type: image.mime }), `reference-${i}.png`));
+  if (step.runninghubInputs) form.set('runninghubInputs', JSON.stringify(step.runninghubInputs));
   let result;
   if (model.apiFormat === 'runninghub') result = await generateRunningHub(model, form, signal, submitted, fetch, resumeId);
   else if (model.apiFormat === 'comfyui') result = await generateComfy(model, input, signal, submitted, resumeId);
@@ -37,6 +38,7 @@ export async function generateTaskImage(model, step, images, signal, submitted, 
       return image?.data ? [{ b64_json: image.data }] : file?.fileUri || file?.file_uri ? [{ url: file.fileUri || file.file_uri }] : [];
     }) };
   }
+  if (model.apiFormat === 'runninghub') return result.data.map((image) => Buffer.from(image.b64_json, 'base64'));
   const image = result.data?.[0];
   if (typeof image?.b64_json === 'string') return Buffer.from(image.b64_json, 'base64');
   if (typeof image?.url === 'string') {

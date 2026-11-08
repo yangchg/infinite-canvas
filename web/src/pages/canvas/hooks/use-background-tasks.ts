@@ -71,5 +71,11 @@ export function useBackgroundTasks(projectId: string, enabled: boolean) {
         await workspaceApi(`/tasks/${taskId}/select/${nodeId}`, { method: "POST", body: jsonBody({ imageId }) });
         await refresh();
     }, [refresh]);
-    return { tasks, error, refresh, submit, cancel, undo, confirmImage };
+    const retry = useCallback(async (taskId: string, nodeId: string, targetId: string) => {
+        await useCanvasStore.getState().flush();
+        const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
+        await workspaceApi(`/tasks/${taskId}/retry/${nodeId}`, { method: "POST", body: jsonBody({ targetId, runId: nanoid(), revision: project?.revision }) });
+        await refresh();
+    }, [projectId, refresh]);
+    return { tasks, error, refresh, submit, cancel, undo, confirmImage, retry };
 }

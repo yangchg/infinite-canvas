@@ -10,12 +10,12 @@
 4. 双击 `Deploy.cmd` 构建并启动；日常启动双击 `Start.cmd`。局域网访问还需 Windows 防火墙允许所需来源访问 TCP 3000；脚本不会自动修改防火墙。
 5. 按 [账号服务说明](../../server/README.md) 设置初始管理员环境变量，在本目录执行 `docker compose exec -e ADMIN_USERNAME -e ADMIN_PASSWORD backend npm run create-admin`，随后清除密码环境变量。使用 `http://localhost:3000` 或 `http://<本机局域网IP>:3000` 登录，创建项目并分配成员。旧浏览器画布不自动迁移，需要先在旧版导出后导入。
 
-若构建网络需要代理，在 PowerShell 中设置自己的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY=localhost,127.0.0.1` 后运行 `./Start-Canvas.ps1 -Build`。代理地址不写死到脚本中。
+首次部署若构建网络需要代理，在 PowerShell 中设置自己的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY=localhost,127.0.0.1` 后运行 `./Start-Canvas.ps1 -Build`。更新脚本的默认代理见下文。
 
 ## 更新与重启
 
 - 日常更新推荐双击 `Update.cmd`：检查后台无运行中任务 → 构建镜像 → 在正在运行的后端容器内备份数据库和附件至仓库 `data/backups/before-update-*` → 更新容器 → 检查页面、通知服务和数据库。需要现有后端正在运行；首次安装仍用 `Deploy.cmd`。构建或备份失败不替换容器，更新后的检查失败会明确报错，不自动回滚。
-- 构建需要代理时，在本目录终端运行 `Update.cmd -ProxyUrl http://127.0.0.1:7890`（换成你实际的代理地址）；不传参数则沿用环境代理。脚本结束恢复原环境变量。更新期间请勿开始新生成任务，也请其他使用者暂停操作；脚本会重复检查任务，但不会锁定全站。
+- `Update.cmd` 默认使用 `http://127.0.0.1:7890` 代理，双击前请开启本机代理软件；需要其他地址时，在本目录终端运行 `Update.cmd -ProxyUrl http://127.0.0.1:其他端口` 覆盖。脚本结束恢复原环境变量。更新期间请勿开始新生成任务，也请其他使用者暂停操作；脚本会重复检查任务，但不会锁定全站。
 - 更新代码后运行 `Deploy.cmd`，再刷新画布页面。它构建前端和账号后端容器，不自动提交代码。
 - 通知配置或通知服务源码改变后，双击 `Restart-DingTalk.cmd`，再刷新画布页面。
 - `Stop-Canvas.ps1` 停止前端和账号后端容器，保留 Windows 通知和供应商中转进程。

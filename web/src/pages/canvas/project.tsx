@@ -1,3 +1,4 @@
+import { useServerModelStore } from "@/stores/use-server-model-store";
 import { mergeCanvas } from "../../../../server/src/task-merge.js";
 import { useBackgroundTasks, taskActive, taskStatus } from "./hooks/use-background-tasks";
 import { BackgroundImageSelection } from "./components/background-image-selection";
@@ -262,7 +263,7 @@ function InfiniteCanvasPage() {
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
     const background = useBackgroundTasks(projectId, projectLoaded);
-    const { submit: submitTask, cancel: cancelTask } = background;
+    const { submit: submitTask, cancel: cancelTask, retry: retryTask } = background;
     const [tasksOpen, setTasksOpen] = useState(false);
     const waitingSelectionKey = background.tasks.filter((task) => task.state === "waiting_selection").map((task) => `${task.id}:${task.steps.find((step) => step.state === "waiting_selection")?.nodeId}`).join(",");
     useEffect(() => { if (waitingSelectionKey) setTasksOpen(true); }, [waitingSelectionKey]);
@@ -357,6 +358,11 @@ function InfiniteCanvasPage() {
                 if (!node || node.type !== CanvasNodeType.Config) throw new Error("生成配置不存在");
                 const config = buildGenerationConfig(effectiveConfig, node, "image");
                 if (config.modelSource !== "server" || !isAiConfigReady(config, config.model)) throw new Error("后台流水线需要每一步都选择可用的服务器图片模型。");
+                const serverModel = useServerModelStore.getState().models.find((item) => config.model === `server-${item.id}::${item.model}`);
+                if (serverModel?.apiFormat === "runninghub") {
+                    if (!serverModel.runninghub?.inputs) throw new Error("请管理员重新读取工作流并保存动态输入映射");
+                    return { ...step, ...prepareBackgroundImage({ ...config, count: "1" }, "", []) };
+                }
                 const pendingOutputIds = new Set(steps.slice(0, index).flatMap((previous) => previous.targetId ? [previous.targetId] : []));
                 // Include planned upstream images in prompt/reference assembly before they have content.
                 const inputNodes = nodesRef.current.map((input) => pendingOutputIds.has(input.id) && !input.metadata?.content
@@ -702,9 +708,21 @@ function InfiniteCanvasPage() {
             if (!exists) {
                 setConnections((prev) => [...prev, { id: `conn-${Date.now()}`, fromNodeId, toNodeId }]);
             }
+            const target = nodesRef.current.find((node) => node.id === toNodeId);
+            const source = nodesRef.current.find((node) => node.id === fromNodeId);
+            const model = useServerModelStore.getState().models.find((item) => target?.metadata?.model === `server-${item.id}::${item.model}`);
+            const inputs = model?.apiFormat === "runninghub" ? model.runninghub?.inputs?.filter((input) => input.type === source?.type) || [] : [];
+            const bind = (inputId: string) => setNodes((prev) => prev.map((node) => node.id === toNodeId ? { ...node, metadata: { ...node.metadata, runninghubBindings: { ...node.metadata?.runninghubBindings, [inputId]: { mode: "node" as const, nodeId: fromNodeId } } } } : node));
+            if (inputs.length === 1) bind(inputs[0].id);
+            else if (inputs.length > 1) {
+                let selected = "";
+                modal.confirm({ title: "这条连线用于哪个输入？", content: <select aria-label="工作流输入" className="mt-3 w-full rounded border bg-transparent p-2" defaultValue="" onChange={(event) => { selected = event.target.value; }}>
+                    <option value="" disabled>请选择输入用途</option>{inputs.map((input) => <option key={input.id} value={input.id}>{input.label}</option>)}
+                </select>, onOk: () => { if (!selected) { message.warning("请选择输入用途"); return Promise.reject(new Error("未选择输入")); } bind(selected); } });
+            }
             setContextMenu(null);
         },
-        [message, t],
+        [message, modal, t],
     );
 
     const createConnectedNode = useCallback(
@@ -3030,6 +3048,15 @@ function InfiniteCanvasPage() {
         async (node: CanvasNodeData, imageId?: string) => {
             if (backgroundNodeRunning(node.id)) { message.info("该图片属于未结束的后台任务，请先完成选图或停止任务。"); return; }
             if (pipelineRunRef.current) { message.info("请等待流水线完成或先停止流水线。"); return; }
+            if (node.metadata?.backgroundTaskId && node.metadata.backgroundStepId) {
+                const taskId = node.metadata.backgroundTaskId, stepId = node.metadata.backgroundStepId;
+                modal.confirm({ title: "重新执行整个 RunningHub 工作流？", content: "使用上次保存的输入重新执行一次，可能产生费用；成功后用整批新图片替换此节点，不会自动运行下游。", onOk: async () => {
+                    updateProject(projectId, { nodes: nodesRef.current, connections: connectionsRef.current });
+                    await useCanvasStore.getState().syncProject(projectId);
+                    await retryTask(taskId, stepId, node.id);
+                } });
+                return;
+            }
             if (hasResumableVideoTask(node)) {
                 await pollVideoNodeTask(node);
                 return;
@@ -3180,7 +3207,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [backgroundNodeRunning, completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, pollVideoNodeTask, startGenerationRequest, t],
+        [retryTask, modal, updateProject, projectId, backgroundNodeRunning, completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, pollVideoNodeTask, startGenerationRequest, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
@@ -3401,6 +3428,7 @@ function InfiniteCanvasPage() {
             <CanvasConfigNodePanel
                 node={contentNode}
                 onReviewImages={background.tasks.some((task) => task.state === "waiting_selection" && task.steps.some((step) => step.nodeId === contentNode.id && step.state === "waiting_selection")) ? () => setTasksOpen(true) : undefined}
+                incomingNodes={nodes.filter((node) => connections.some((edge) => edge.fromNodeId === node.id && edge.toNodeId === contentNode.id))}
                 outputImages={nodes.filter((node) => node.type === CanvasNodeType.Image && connections.some((edge) => edge.fromNodeId === contentNode.id && edge.toNodeId === node.id))}
                 onReplaceOutput={handleReplaceOutput}
                 isRunning={runningNodeId === contentNode.id || backgroundNodeRunning(contentNode.id)}

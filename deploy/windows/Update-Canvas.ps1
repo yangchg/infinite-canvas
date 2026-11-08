@@ -1,4 +1,4 @@
-param([string]$ProxyUrl)
+param([string]$ProxyUrl = 'http://127.0.0.1:7890')
 $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $composeArgs = @('compose', '--env-file', "$PSScriptRoot\.env", '-f', "$PSScriptRoot\compose.yaml")

@@ -15,7 +15,7 @@ const schema = z.object({
   baseUrl: z.url().refine((value) => { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; }),
   apiKey: z.string().trim().optional(), enabled: z.boolean(),
 });
-const publicModel = ({ id, name, model, capability, apiFormat }) => ({ id, name, model, capability, apiFormat });
+const publicModel = ({ id, name, model, capability, apiFormat, runninghub }) => ({ id, name, model, capability, apiFormat, ...(apiFormat === "runninghub" ? { runninghub } : {}) });
 
 export async function registerModels(app) {
   const db = app.db;
@@ -89,10 +89,10 @@ export async function registerModels(app) {
       const path = request.params["*"];
       if (config.apiFormat === "runninghub") {
         config.apiKey = runningHubKey();
-        if (request.method !== "POST" || path !== "v1/images/edits") fail(400, "草稿细化需要参考图片，请连接 1 张图片后生成");
+        if (request.method !== "POST" || !["v1/images/edits", "v1/images/generations"].includes(path)) fail(400, "不支持的工作流请求");
         let form;
         try { form = await new Response(request.body, { headers: { "Content-Type": request.headers["content-type"] || "" } }).formData(); }
-        catch { fail(400, "请使用图片表单提交草稿细化请求"); }
+        catch { fail(400, "请通过画布生成配置提交工作流输入"); }
         if (form.get("model") !== config.model) fail(400, "模型与配置不一致");
         const controller = new AbortController();
         const timeout = AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS || 300_000));

@@ -8,6 +8,7 @@ import { digest } from './password.js';
 import { transaction } from './database.js';
 import { mergeCanvas, sameCanvasValue } from './task-merge.js';
 import { planPipeline } from './canvas-pipeline.js';
+import { resolveRunningHubBindings } from './runninghub-inputs.js';
 import { generateTaskImage } from './task-images.js';
 
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
@@ -17,7 +18,7 @@ const selectedOutput = (step) => step?.outputs.find((output) => output.id === st
 const now = () => new Date().toISOString();
 const id = z.string().min(1);
 const schema = z.object({ runId: id, revision: z.number().int(), entryId: id.optional(), steps: z.array(z.object({
-  nodeId: id, targetId: id.optional(), model: id, prompt: z.string().trim().min(1), displayPrompt: z.string(), systemPrompt: z.string().optional(), count: z.number().int().min(1).max(15),
+  nodeId: id, targetId: id.optional(), model: id, prompt: z.string(), displayPrompt: z.string(), systemPrompt: z.string().optional(), count: z.number().int().min(1).max(15),
   references: z.array(z.object({ nodeId: id, storageKey: id.optional() })),
   parameters: z.object({ size: z.string().optional(), quality: z.string().optional(), background: z.literal('transparent').optional() }),
   gemini: z.object({ imageConfig: z.object({ aspectRatio: z.string().optional(), imageSize: z.string().optional() }).optional() }).default({}),
@@ -154,18 +155,23 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
             save(task);
           });
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS || 300_000))]);
-          const bytes = await generate(step.modelConfig, step, images, signal, (upstreamId) => { job.upstreamId = upstreamId; save(task); }, job.upstreamId);
-          const dimensions = imageSize(bytes);
-          if (!dimensions.width || !dimensions.height || !['png', 'jpg', 'webp', 'gif', 'avif'].includes(dimensions.type)) throw new Error('生成结果不是支持的图片');
-          const storageKey = `image:${randomUUID()}`, mimeType = `image/${dimensions.type === 'jpg' ? 'jpeg' : dimensions.type}`;
-          await writeFile(join(filesDir, digest(storageKey)), bytes, { flag: 'wx' });
-          transaction(db, () => {
-            db.prepare('INSERT INTO files VALUES(?,?,?,?)').run(storageKey, task.actor, mimeType, bytes.length);
-            db.prepare('INSERT INTO task_files VALUES(?,?)').run(task.id, storageKey);
-            job.output = { id: randomUUID(), status: 'success', content: `/api/files/${encodeURIComponent(storageKey)}`, storageKey, naturalWidth: dimensions.width, naturalHeight: dimensions.height, bytes: bytes.length, mimeType };
-            step.outputs = step.jobs.flatMap((item) => item.output ? [item.output] : []);
-            job.dispatching = false; delete job.upstreamId; save(task);
-          });
+          const result = await generate(step.modelConfig, step, images, signal, (upstreamId) => { job.upstreamId = upstreamId; save(task); }, job.upstreamId);
+          const outputs = [];
+          for (const bytes of Array.isArray(result) ? result : [result]) {
+            const dimensions = imageSize(bytes);
+            if (!dimensions.width || !dimensions.height || !['png', 'jpg', 'webp', 'gif', 'avif'].includes(dimensions.type)) throw new Error('生成结果不是支持的图片');
+            const storageKey = `image:${randomUUID()}`, mimeType = `image/${dimensions.type === 'jpg' ? 'jpeg' : dimensions.type}`;
+            await writeFile(join(filesDir, digest(storageKey)), bytes, { flag: 'wx' });
+            transaction(db, () => {
+              db.prepare('INSERT INTO files VALUES(?,?,?,?)').run(storageKey, task.actor, mimeType, bytes.length);
+              db.prepare('INSERT INTO task_files VALUES(?,?)').run(task.id, storageKey);
+              outputs.push({ id: randomUUID(), status: 'success', content: `/api/files/${encodeURIComponent(storageKey)}`, storageKey, naturalWidth: dimensions.width, naturalHeight: dimensions.height, bytes: bytes.length, mimeType });
+            });
+          }
+          if (!outputs.length) throw new Error('工作流没有返回图片');
+          job.output = outputs;
+          step.outputs = step.jobs.flatMap((item) => item.output || []);
+          job.dispatching = false; delete job.upstreamId; save(task);
         }));
         const failure = generated.find((item) => item.status === 'rejected');
         if (failure && (step.targetId || !step.outputs.length)) throw failure.reason;
@@ -174,7 +180,9 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
           const { row, content, user } = check(task, step);
           const source = content.nodes.find((node) => node.id === step.nodeId);
           const primary = step.outputs[0];
-          const metadata = { ...step.metadata, ...primary, count: step.count, images: step.outputs, primaryImageId: primary.id, prompt: step.displayPrompt,
+          const metadata = { ...step.metadata, ...primary, count: step.outputs.length, images: step.outputs, primaryImageId: primary.id, prompt: step.displayPrompt,
+            backgroundTaskId: step.modelConfig.apiFormat === 'runninghub' ? task.id : undefined,
+            backgroundStepId: step.modelConfig.apiFormat === 'runninghub' ? step.nodeId : undefined,
             modelSource: 'server', generationType: step.references.length ? 'edit' : 'generation', references: step.references.map((reference) => {
               const previous = task.steps.find((item) => item.targetId === reference.nodeId && item.state === 'success');
               return `/api/files/${encodeURIComponent(selectedOutput(previous)?.storageKey || reference.storageKey)}`;
@@ -249,7 +257,12 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
       if (!modelConfig.enabled || modelConfig.capability !== 'image' || step.model !== `server-${modelId}::${modelConfig.model}`) fail(400, '服务器图片模型不可用');
       if (modelConfig.apiFormat === 'runninghub') {
         modelConfig.apiKey = db.prepare("SELECT apiKey FROM provider_settings WHERE provider='runninghub'").get()?.apiKey;
-        if (!modelConfig.apiKey || step.references.length !== 1 || step.count !== 1) fail(400, 'RunningHub 需要全局 Key、1 张参考图及单张输出');
+        if (!modelConfig.apiKey || step.count !== 1) fail(400, 'RunningHub 需要全局 Key，每次执行一次工作流');
+        const resolved = resolveRunningHubBindings(modelConfig.runninghub, node, snapshot);
+        step.references = resolved.references; step.runninghubInputs = resolved.values;
+        step.prompt = ''; step.displayPrompt = modelConfig.name;
+      } else if (!step.prompt.trim()) {
+        fail(400, '请填写提示词');
       }
       if (modelConfig.apiFormat === 'comfyui' && step.references.length) fail(400, '当前 ComfyUI 不支持参考图');
       const before = step.targetId ? snapshot.nodes.find((item) => item.id === step.targetId) : undefined;
@@ -335,6 +348,41 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
       task.cancelRequested = true; task.state = 'canceling'; task.message = '已请求停止，供应商任务可能仍运行并计费'; save(task);
     }
     return view(task);
+  });
+  app.post('/api/tasks/:taskId/retry/:nodeId', async (request, reply) => {
+    const original = owned(request);
+    const { targetId, runId, revision } = z.object({ targetId: id, runId: id, revision: z.number().int() }).parse(request.body);
+    const existing = db.prepare('SELECT data FROM canvas_tasks WHERE id=?').get(runId);
+    if (existing) {
+      const task = JSON.parse(existing.data);
+      if (task.actor !== request.user.id || task.canvasId !== original.canvasId) fail(409, '运行标识已被使用');
+      return view(task);
+    }
+    if (active(original)) fail(409, '请先结束原任务');
+    const previous = original.steps.find((item) => item.nodeId === request.params.nodeId);
+    if (previous?.modelConfig.apiFormat !== 'runninghub') fail(400, '该任务不支持工作流重试');
+    const row = canvas(request.user, original.canvasId, { owner: true, write: true });
+    if (row.revision !== revision) fail(409, '画布已变化，请同步后重试');
+    const snapshot = JSON.parse(row.content), before = snapshot.nodes.find((node) => node.id === targetId);
+    if (before?.type !== 'image' || before.metadata?.backgroundTaskId !== original.id || before.metadata?.backgroundStepId !== previous.nodeId || !snapshot.connections.some((edge) => edge.fromNodeId === previous.nodeId && edge.toNodeId === targetId)) fail(409, '原输出已变化或连线断开');
+    if (all().some((task) => task.canvasId === row.id && active(task) && task.steps.some((step) => step.nodeId === previous.nodeId || step.targetId === targetId))) fail(409, '节点已有后台任务');
+    const stored = db.prepare('SELECT config FROM shared_models WHERE id=?').get(previous.modelId);
+    const current = stored && JSON.parse(stored.config);
+    if (!current?.enabled || current.model !== previous.modelConfig.model || current.apiFormat !== 'runninghub' || !same(current.runninghub, previous.modelConfig.runninghub)) fail(409, '工作流映射已变化，请从生成配置重新运行');
+    const modelConfig = { ...previous.modelConfig, apiKey: db.prepare("SELECT apiKey FROM provider_settings WHERE provider='runninghub'").get()?.apiKey };
+    if (!modelConfig.apiKey) fail(400, '请配置 RunningHub 全局 Key');
+    const references = previous.references.map((reference) => {
+      const produced = original.steps.find((step) => step.targetId === reference.nodeId && step.state === 'success');
+      const storageKey = selectedOutput(produced)?.storageKey || reference.storageKey;
+      if (!canReadFile(request.user, storageKey)) fail(403, '原参考图已不可访问');
+      return { ...reference, storageKey };
+    });
+    const step = { ...previous, references, modelConfig, targetId, before, after: undefined, requireSelection: false, selectedImageId: undefined, undone: false, notifications: [], startedAt: undefined, message: undefined, state: 'queued', outputs: [], jobs: [{}] };
+    const task = { id: runId, canvasId: row.id, actor: request.user.id, title: row.title, snapshot, steps: [step], state: 'queued', createdAt: now(), updatedAt: now() };
+    check(task, step);
+    db.prepare('INSERT INTO canvas_tasks VALUES(?,?,?,?)').run(runId, row.id, request.user.id, JSON.stringify(task));
+    events.emit(row.id); start(runId);
+    return reply.code(202).send(view(task));
   });
   app.post('/api/tasks/:taskId/undo/:nodeId', async (request) => {
     const task = owned(request), step = task.steps.find((item) => item.nodeId === request.params.nodeId);

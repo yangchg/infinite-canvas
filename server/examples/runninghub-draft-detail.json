@@ -6,10 +6,26 @@
   "capability": "image",
   "enabled": false,
   "runninghub": {
-    "promptNode": "5622",
-    "promptField": "value",
-    "imageNode": "5650",
-    "imageField": "image",
-    "outputNode": "5712"
+    "inputs": [
+      {
+        "id": "prompt",
+        "nodeId": "5622",
+        "field": "value",
+        "label": "提示词",
+        "type": "text",
+        "required": true
+      },
+      {
+        "id": "image",
+        "nodeId": "5650",
+        "field": "image",
+        "label": "参考图",
+        "type": "image",
+        "required": true
+      }
+    ],
+    "outputNodes": [
+      "5712"
+    ]
   }
 }

@@ -15,7 +15,7 @@ const blank = { nodes: [], connections: [], chatSessions: [], activeChatId: null
 test("RunningHub configuration requires admin and a key before enabling, keeps secrets private", async (t) => {
   const { send, admin, owner } = await fixture(t);
   const settings = { name: "RH", model: "2093181040868290562", capability: "image", apiFormat: "runninghub", baseUrl: "https://www.runninghub.cn", enabled: false,
-    runninghub: { promptNode: "5622", promptField: "value", imageNode: "5650", imageField: "image", outputNode: "5712" } };
+    runninghub: {"inputs":[{"id":"prompt","nodeId":"5622","field":"value","label":"提示词","type":"text","required":true},{"id":"image","nodeId":"5650","field":"image","label":"图片","type":"image","required":true}],"outputNodes":["5712"]} };
   assert.equal((await send(owner, "PUT", "/admin/models/new", settings)).statusCode, 403);
   const saved = await send(admin, "PUT", "/admin/models/new", settings);
   assert.equal(saved.statusCode, 200, saved.body);
@@ -25,7 +25,7 @@ test("RunningHub configuration requires admin and a key before enabling, keeps s
   assert.equal((await send(admin, "PUT", "/admin/runninghub/settings", { apiKey: "rh-secret" })).statusCode, 200);
   assert.equal((await send(admin, "PUT", `/admin/models/${id}`, { ...settings, enabled: true })).statusCode, 200);
   assert.equal((await send(admin, "GET", "/admin/models")).body.includes("rh-secret"), false);
-  assert.equal((await send(owner, "GET", "/models")).body.includes("runninghub\":"), false);
+  assert.deepEqual((await send(owner, "GET", "/models")).json()[0].runninghub, settings.runninghub);
   const path = `/model-gateway/${id}/v1/images/edits`;
   assert.equal((await send(owner, "POST", path, {}, { "x-csrf-token": "wrong" })).statusCode, 403);
   assert.equal((await send(owner, "POST", path.replace("edits", "generations"), {})).statusCode, 400);
@@ -374,7 +374,7 @@ test("RunningHub global settings enforce admin, protect keys and rotate only new
   assert.equal((await send(admin, "PUT", settingPath, { apiKey: "secret-a" })).statusCode, 200);
   assert.deepEqual((await send(admin, "GET", settingPath)).json(), { hasKey: true, needsSetup: false });
   const settings = { name: "RH", model: "https://www.runninghub.cn/workflow-detail/123", capability: "image", apiFormat: "runninghub", baseUrl: "https://www.runninghub.cn", enabled: true,
-    apiKey: "ignored-per-model", runninghub: { promptNode: "1", promptField: "text", imageNode: "2", imageField: "image", outputNode: "3" } };
+    apiKey: "ignored-per-model", runninghub: {"inputs":[{"id":"prompt","nodeId":"1","field":"text","label":"提示词","type":"text","required":true},{"id":"image","nodeId":"2","field":"image","label":"图片","type":"image","required":true}],"outputNodes":["3"]} };
   const saved = await send(admin, "PUT", "/admin/models/new", settings);
   assert.equal(saved.statusCode, 200, saved.body);
   const id = saved.json().id;
@@ -406,7 +406,7 @@ test("RunningHub global settings enforce admin, protect keys and rotate only new
     return new Response("image", { headers: { "Content-Type": "image/png" } });
   });
   for (let i = 0; i < 2; i++) {
-    const form = new FormData(); form.set("model", "123"); form.set("prompt", "draft");
+    const form = new FormData(); form.set("model", "123"); form.set("runninghubInputs", JSON.stringify({ prompt: "draft", image: { imageIndex: 0 } }));
     form.set("image", new Blob(["draft"], { type: "image/png" }), "draft.png");
     const encoded = new Response(form);
     const response = await send(owner, "POST", `/model-gateway/${id}/v1/images/edits`, Buffer.from(await encoded.arrayBuffer()), { "content-type": encoded.headers.get("content-type") });
@@ -529,7 +529,7 @@ test("canvas descriptions persist and public descriptions follow published snaps
 test("public RunningHub badge follows published config nodes rather than names or draft edits", async (t) => {
   const { send, admin, owner, member, projectId } = await fixture(t);
   const model = (await send(admin, "PUT", "/admin/models/new", { name: "RH", model: "123", capability: "image", apiFormat: "runninghub", baseUrl: "https://www.runninghub.cn", enabled: false,
-    runninghub: { promptNode: "1", promptField: "text", imageNode: "2", imageField: "image", outputNode: "3" } })).json();
+    runninghub: {"inputs":[{"id":"prompt","nodeId":"1","field":"text","label":"提示词","type":"text","required":true},{"id":"image","nodeId":"2","field":"image","label":"图片","type":"image","required":true}],"outputNodes":["3"]} })).json();
   const node = { id: "config", type: "config", title: "生成配置", position: { x: 0, y: 0 }, width: 300, height: 300, metadata: { modelSource: "server", model: `server-${model.id}::123` } };
   const save = (revision, nodes) => send(owner, "PUT", "/canvases/rh-badge", { projectId, title: "RunningHub", revision, content: { ...blank, nodes } });
   const badge = async () => (await send(member, "GET", `/projects/${projectId}/public`)).json()[0].hasRunningHub;
