@@ -55,6 +55,7 @@ export type CanvasNodeMetadata = {
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     replacementOutputId?: string;
+    confirmImageSelection?: boolean;
     notificationChannel?: string;
     notificationUsers?: string[];
     notifySuccess?: boolean;

@@ -1,5 +1,6 @@
 import { mergeCanvas } from "../../../../server/src/task-merge.js";
 import { useBackgroundTasks, taskActive, taskStatus } from "./hooks/use-background-tasks";
+import { BackgroundImageSelection } from "./components/background-image-selection";
 import { trackCanvasRun } from "@/services/api/canvas-usage";
 import CanvasViewer from "./viewer";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -263,6 +264,8 @@ function InfiniteCanvasPage() {
     const background = useBackgroundTasks(projectId, projectLoaded);
     const { submit: submitTask, cancel: cancelTask } = background;
     const [tasksOpen, setTasksOpen] = useState(false);
+    const waitingSelectionKey = background.tasks.filter((task) => task.state === "waiting_selection").map((task) => `${task.id}:${task.steps.find((step) => step.state === "waiting_selection")?.nodeId}`).join(",");
+    useEffect(() => { if (waitingSelectionKey) setTasksOpen(true); }, [waitingSelectionKey]);
     const submittingTask = useRef(false);
     const backgroundNodeRunning = useCallback((nodeId: string) => background.tasks.some((task) => taskActive(task) && task.steps.some((step) => step.nodeId === nodeId || step.targetId === nodeId)), [background.tasks]);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
@@ -1799,6 +1802,10 @@ function InfiniteCanvasPage() {
     }, []);
 
     const setBatchPrimary = useCallback((nodeId: string, itemId: string) => {
+        if (background.tasks.some((task) => task.state === "waiting_selection" && task.steps.some((step) => step.targetId === nodeId && step.state === "waiting_selection"))) {
+            setTasksOpen(true);
+            return;
+        }
         setNodes((prev) =>
             prev.map((node) => {
                 if (node.id !== nodeId) return node;
@@ -1827,7 +1834,7 @@ function InfiniteCanvasPage() {
                 };
             }),
         );
-    }, []);
+    }, [background.tasks]);
 
     const duplicateBatchImage = useCallback((node: CanvasNodeData, imageId: string) => {
         const image = node.metadata?.images?.find((item) => item.id === imageId);
@@ -2967,6 +2974,7 @@ function InfiniteCanvasPage() {
                 await submitBackground(steps, entryId);
                 return;
             }
+            if (steps.some((step) => nodesRef.current.find((node) => node.id === step.nodeId)?.metadata?.confirmImageSelection)) throw new Error("人工选图后继续目前仅支持全部使用服务器图片模型的流水线。");
         } catch (error) { message.error(String(error)); return; }
         if (pipelineRunRef.current || generationRequestsRef.current.size) {
             message.info("请先等待当前生成完成。");
@@ -3020,6 +3028,7 @@ function InfiniteCanvasPage() {
 
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData, imageId?: string) => {
+            if (backgroundNodeRunning(node.id)) { message.info("该图片属于未结束的后台任务，请先完成选图或停止任务。"); return; }
             if (pipelineRunRef.current) { message.info("请等待流水线完成或先停止流水线。"); return; }
             if (hasResumableVideoTask(node)) {
                 await pollVideoNodeTask(node);
@@ -3171,10 +3180,11 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, pollVideoNodeTask, startGenerationRequest, t],
+        [backgroundNodeRunning, completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, pollVideoNodeTask, startGenerationRequest, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
+        if (backgroundNodeRunning(nodeId)) { message.info("请先完成选图或停止后台任务，再删除候选图片。"); return; }
         const node = nodesRef.current.find((item) => item.id === nodeId);
         if ((node?.metadata?.images?.length || 0) <= 2) setExpandedBatchNodeIds((current) => new Set([...current].filter((id) => id !== nodeId)));
         setNodes((prev) =>
@@ -3184,7 +3194,7 @@ function InfiniteCanvasPage() {
                 return { ...item, metadata: { ...item.metadata, images, count: images.length, primaryImageId: item.metadata?.primaryImageId === imageId ? images[0]?.id : item.metadata?.primaryImageId } };
             }),
         );
-    }, []);
+    }, [backgroundNodeRunning, message]);
 
     const retryBatchImage = useCallback((node: CanvasNodeData, imageId: string) => void handleRetryNode(node, imageId), [handleRetryNode]);
 
@@ -3390,6 +3400,7 @@ function InfiniteCanvasPage() {
         ) : (
             <CanvasConfigNodePanel
                 node={contentNode}
+                onReviewImages={background.tasks.some((task) => task.state === "waiting_selection" && task.steps.some((step) => step.nodeId === contentNode.id && step.state === "waiting_selection")) ? () => setTasksOpen(true) : undefined}
                 outputImages={nodes.filter((node) => node.type === CanvasNodeType.Image && connections.some((edge) => edge.fromNodeId === contentNode.id && edge.toNodeId === node.id))}
                 onReplaceOutput={handleReplaceOutput}
                 isRunning={runningNodeId === contentNode.id || backgroundNodeRunning(contentNode.id)}
@@ -3470,6 +3481,8 @@ function InfiniteCanvasPage() {
                         {task.message && <p className="my-2">{task.message}</p>}
                         {task.steps.map((step) => <div key={step.nodeId} className="mt-3">
                             <div>{step.title}：{taskStatus(step.state)} {step.message}</div>
+                            {task.state === "waiting_selection" && step.state === "waiting_selection" && <BackgroundImageSelection outputs={step.outputs} onConfirm={(imageId) => background.confirmImage(task.id, step.nodeId, imageId)} />}
+                            {step.selectedImageId && <p className="mt-1 opacity-70">已确认图片 {step.outputs.findIndex((image) => image.id === step.selectedImageId) + 1}</p>}
                             <div className="flex flex-wrap items-center gap-2">
                                 {step.outputs.map((image, index) => <a key={image.id} href={image.content} download>下载结果 {index + 1}</a>)}
                                 {step.canUndo && !taskActive(task) && <Button type="text" size="small" onClick={() => void background.undo(task.id, step.nodeId).catch((error) => message.error(String(error)))}>撤销替换</Button>}

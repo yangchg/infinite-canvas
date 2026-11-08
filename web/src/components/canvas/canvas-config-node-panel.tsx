@@ -24,9 +24,10 @@ type CanvasConfigNodePanelProps = {
     onReplaceOutput: (nodeId: string, targetId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
+    onReviewImages?: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, outputImages, onReplaceOutput, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, outputImages, onReplaceOutput, onStop, onComposerToggle, onReviewImages }: CanvasConfigNodePanelProps) {
     const replacementId = node.metadata?.replacementOutputId || "";
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
@@ -121,22 +122,30 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 {source === "server" && <button type="button" disabled={serverModels.loading} onClick={() => void serverModels.load()}>{serverModels.loading ? "加载中…" : "刷新清单"}</button>}
             </div>
             {source === "server" && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>{serverModels.error || (!config.models.length && !serverModels.loading ? "暂无服务器模型，请联系管理员配置" : "")}</div>}
-            <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_148px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-2 grid min-w-0 cursor-default grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, ...(isRunningHubModel(model) ? { count: 1 } : {}) })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
-                    <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                    <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                 ) : mode === "image" && isRunningHub ? (
                     <span className="text-xs">工作流尺寸 · 1 张</span>
                 ) : mode === "image" ? (
-                    <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
+                    <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
-                    <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
+                    <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
                 ) : (
-                    <CanvasTextSettingsPopover config={config} count={node.metadata?.textCount || 1} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })} onCountChange={(textCount) => onConfigChange(node.id, { textCount })} />
+                    <CanvasTextSettingsPopover config={config} count={node.metadata?.textCount || 1} placement="topRight" buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })} onCountChange={(textCount) => onConfigChange(node.id, { textCount })} />
                 )}
             </div>
 
             {isRunningHub && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>需要 1 张参考图。切换模型保留原提示词；若使用「组装提示词」，须输入 @ 并选中已连接的图片。修改后点击「开始生成」，旧结果的「重试」沿用原参数。图片将上传 RunningHub，使用服务器账号计费。</div>}
+            {mode === "image" && source === "server" && <div className="mb-2 text-xs" onMouseDown={(event) => event.stopPropagation()}>
+                <label className="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" checked={Boolean(node.metadata?.confirmImageSelection)} disabled={isRunning} onChange={(event) => onConfigChange(node.id, { confirmImageSelection: event.target.checked })} />
+                    人工选图后继续
+                </label>
+                {node.metadata?.confirmImageSelection && <p className="mt-1" style={{ color: theme.node.muted }}>流水线生成多张后等待确认；需选择固定输出图片节点。单张结果自动继续。</p>}
+            </div>}
+            {onReviewImages && <button type="button" className="mb-2 rounded px-2 py-2 text-sm hover:bg-black/5 dark:hover:bg-white/10" onMouseDown={(event) => event.stopPropagation()} onClick={onReviewImages}>等待选图 · 选择图片并继续</button>}
             <div className="mt-auto flex min-w-0 items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 {mode === "image" && (outputImages.length > 0 || replacementId) && (
                     <select

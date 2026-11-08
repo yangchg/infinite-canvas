@@ -40,6 +40,95 @@ async function fixture(t, generate = async () => png, extra = {}) {
     return { send, content, save, step, submit, tasks, wait, read, restart, db: () => app.db, listen: () => app.listen({ host: '127.0.0.1', port: 0 }) };
 }
 
+async function selectionFixture(t) {
+    const calls = [];
+    const f = await fixture(t, async (...args) => { calls.push(args); return png; });
+    f.content.nodes.find((item) => item.id === 'a').metadata.confirmImageSelection = true;
+    assert.equal((await f.save(f.content, 1)).statusCode, 200);
+    const first = { ...f.step('a', 'out'), count: 2 };
+    const response = await f.submit([first, f.step('b', undefined, [{ nodeId: 'out', storageKey: 'image:old' }])], 'start', randomUUID(), 2);
+    assert.equal(response.statusCode, 202, response.body);
+    const [task] = await f.wait();
+    assert.equal(task.state, 'waiting_selection');
+    assert.equal(calls.length, 2);
+    return { ...f, calls, task, select: (imageId, user) => f.send('POST', `/tasks/${task.id}/select/a`, { imageId }, user) };
+}
+
+test('manual selection survives restart, freezes selected image and resumes exactly once', { timeout: 10000 }, async (t) => {
+    const f = await selectionFixture(t);
+    assert.equal(f.task.steps[1].state, 'queued');
+    const before = await f.read();
+    assert.equal(before.nodes.find((node) => node.id === 'out').metadata.images.length, 2);
+    assert.equal((await f.submit([f.step('a', 'out')], undefined, randomUUID(), before.revision)).statusCode, 409);
+    assert.equal((await f.select('invalid')).statusCode, 400);
+    assert.equal((await f.select(f.task.steps[0].outputs[1].id, 'other')).statusCode, 403);
+    const downstream = deferred(), started = deferred();
+    let downstreamCalls = 0;
+    await f.restart(async () => { downstreamCalls++; started.resolve(); await downstream.promise; return png; });
+    assert.equal((await f.tasks())[0].state, 'waiting_selection');
+    assert.equal(downstreamCalls, 0);
+    const selected = f.task.steps[0].outputs[1];
+    const responses = await Promise.all([f.select(selected.id), f.select(selected.id)]);
+    assert.deepEqual(responses.map((response) => response.statusCode), [200, 200]);
+    await started.promise;
+    assert.equal(downstreamCalls, 1);
+    assert.equal((await f.select(f.task.steps[0].outputs[0].id)).statusCode, 409);
+    // A later display-only change must not change this run's selected input.
+    const current = await f.read();
+    const output = current.nodes.find((node) => node.id === 'out');
+    assert.equal(output.metadata.primaryImageId, selected.id);
+    output.metadata.primaryImageId = f.task.steps[0].outputs[0].id;
+    assert.equal((await f.save(current, current.revision)).statusCode, 200);
+    downstream.resolve();
+    const [done] = await f.wait((tasks) => tasks[0].state === 'success');
+    assert.equal(done.steps[0].selectedImageId, selected.id);
+    assert.equal(downstreamCalls, 1);
+    const final = (await f.read()).nodes.at(-1);
+    assert.deepEqual(final.metadata.references, [`/api/files/${encodeURIComponent(selected.storageKey)}`]);
+    assert.deepEqual((await f.read()).connections.slice(0, before.connections.length), before.connections);
+});
+
+test('waiting selection can be canceled durably without executing downstream', { timeout: 10000 }, async (t) => {
+    const f = await selectionFixture(t);
+    const canceled = await f.send('POST', `/tasks/${f.task.id}/cancel`);
+    assert.equal(canceled.json().state, 'canceled');
+    assert.equal(canceled.json().steps[1].state, 'skipped');
+    assert.equal((await f.select(f.task.steps[0].outputs[0].id)).statusCode, 409);
+    await f.restart();
+    assert.equal((await f.tasks())[0].state, 'canceled');
+    assert.equal(f.calls.length, 2);
+    const undo = await f.send('POST', `/tasks/${f.task.id}/undo/a`);
+    assert.equal(undo.statusCode, 200, undo.body);
+    assert.equal((await f.read()).nodes.find((node) => node.id === 'out').metadata.storageKey, 'image:old');
+});
+
+test('confirmation rejects changed output metadata or disconnected workflow', { timeout: 10000 }, async (t) => {
+    const f = await selectionFixture(t);
+    const original = await f.read();
+    const changed = structuredClone(original);
+    changed.nodes.find((node) => node.id === 'out').metadata.prompt = 'edited';
+    assert.equal((await f.save(changed, original.revision)).statusCode, 200);
+    assert.equal((await f.select(f.task.steps[0].outputs[0].id)).statusCode, 409);
+    original.connections = original.connections.filter((edge) => !(edge.fromNodeId === 'out' && edge.toNodeId === 'b'));
+    assert.equal((await f.save(original, original.revision + 1)).statusCode, 200);
+    assert.equal((await f.select(f.task.steps[0].outputs[0].id)).statusCode, 409);
+    assert.equal(f.calls.length, 2);
+});
+
+test('single-image manual step continues automatically and missing fixed output is rejected', { timeout: 10000 }, async (t) => {
+    const f = await fixture(t);
+    f.content.nodes.find((item) => item.id === 'a').metadata.confirmImageSelection = true;
+    assert.equal((await f.save(f.content, 1)).statusCode, 200);
+    const response = await f.submit([f.step('a', 'out'), f.step('b')], 'start', randomUUID(), 2);
+    assert.equal(response.statusCode, 202, response.body);
+    assert.equal((await f.wait())[0].state, 'success');
+    const current = await f.read();
+    current.nodes.find((item) => item.id === 'a').metadata.replacementOutputId = '';
+    assert.equal((await f.save(current, current.revision)).statusCode, 200);
+    const rejected = await f.submit([f.step('a')], 'start', randomUUID(), current.revision + 1);
+    assert.equal(rejected.statusCode, 400, rejected.body);
+});
+
 test('pipeline fills an empty output and feeds its generated image to the next step', { timeout: 10000 }, async (t) => {
     const inputs = [];
     const f = await fixture(t, async (...args) => { inputs.push(args); return png; });

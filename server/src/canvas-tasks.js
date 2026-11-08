@@ -12,7 +12,8 @@ import { generateTaskImage } from './task-images.js';
 
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const same = sameCanvasValue;
-const active = (task) => ['queued', 'running', 'canceling'].includes(task.state);
+const active = (task) => ['queued', 'running', 'canceling', 'waiting_selection'].includes(task.state);
+const selectedOutput = (step) => step?.outputs.find((output) => output.id === step.selectedImageId) || step?.outputs[0];
 const now = () => new Date().toISOString();
 const id = z.string().min(1);
 const schema = z.object({ runId: id, revision: z.number().int(), entryId: id.optional(), steps: z.array(z.object({
@@ -49,7 +50,7 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
   const all = () => db.prepare('SELECT data FROM canvas_tasks').all().map((row) => JSON.parse(row.data));
   const get = (taskId) => { const row = db.prepare('SELECT data FROM canvas_tasks WHERE id=?').get(taskId); if (!row) fail(404, '任务不存在'); return JSON.parse(row.data); };
   const view = (task) => ({ id: task.id, canvasId: task.canvasId, entryId: task.entryId, state: task.state, message: task.message,
-    createdAt: task.createdAt, updatedAt: task.updatedAt, steps: task.steps.map((step) => ({ nodeId: step.nodeId, targetId: step.targetId, title: step.title, state: step.state, message: step.message, outputs: step.outputs, undone: step.undone, canUndo: Boolean(step.after && !step.undone), notifications: step.notifications })) });
+    createdAt: task.createdAt, updatedAt: task.updatedAt, steps: task.steps.map((step) => ({ nodeId: step.nodeId, targetId: step.targetId, title: step.title, state: step.state, message: step.message, outputs: step.outputs, selectedImageId: step.selectedImageId, undone: step.undone, canUndo: Boolean(step.after && !step.undone), notifications: step.notifications })) });
   const save = (task) => {
     if (get(task.id).cancelRequested) { task.cancelRequested = true; if (active(task)) task.state = "canceling"; }
     task.updatedAt = now();
@@ -115,6 +116,7 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
   }
   async function run(taskId, controller) {
     let task = get(taskId), step;
+    if (task.state === 'waiting_selection') return;
     try {
       if (task.cancelRequested) controller.abort();
       controller.signal.throwIfAborted();
@@ -132,7 +134,7 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
           controller.signal.throwIfAborted();
           const images = await Promise.all(step.references.map(async (reference) => {
             const produced = task.steps.find((previous) => previous.targetId === reference.nodeId && previous.state === 'success');
-            const key = produced?.outputs[0]?.storageKey || reference.storageKey;
+            const key = selectedOutput(produced)?.storageKey || reference.storageKey;
             if (!canReadFile(userFor(task), key)) fail(403, '参考图片无权访问');
             const file = db.prepare('SELECT mime FROM files WHERE id=?').get(key);
             return { mime: file.mime, bytes: await readFile(join(filesDir, digest(key))) };
@@ -175,7 +177,7 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
           const metadata = { ...step.metadata, ...primary, count: step.count, images: step.outputs, primaryImageId: primary.id, prompt: step.displayPrompt,
             modelSource: 'server', generationType: step.references.length ? 'edit' : 'generation', references: step.references.map((reference) => {
               const previous = task.steps.find((item) => item.targetId === reference.nodeId && item.state === 'success');
-              return `/api/files/${encodeURIComponent(previous?.outputs[0]?.storageKey || reference.storageKey)}`;
+              return `/api/files/${encodeURIComponent(selectedOutput(previous)?.storageKey || reference.storageKey)}`;
             }) };
           delete metadata.id;
           if (step.targetId) {
@@ -192,9 +194,15 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
             content.nodes.push(node); content.connections.push({ id: randomUUID(), fromNodeId: step.nodeId, toNodeId: node.id });
           }
           commit(row, content, user);
-          step.state = failure ? 'failed' : 'success'; save(task);
+          step.state = failure ? 'failed' : step.requireSelection && step.outputs.length > 1 ? 'waiting_selection' : 'success';
+          if (step.state === 'waiting_selection') {
+            task.state = 'waiting_selection';
+            task.message = `「${step.title}」等待选图，请确认一张图片后继续`;
+          }
+          save(task);
         });
         if (failure) throw failure.reason;
+        if (step.state === 'waiting_selection') return;
         await notifications(task, step, 'success');
       }
       controller.signal.throwIfAborted();
@@ -245,6 +253,8 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
       }
       if (modelConfig.apiFormat === 'comfyui' && step.references.length) fail(400, '当前 ComfyUI 不支持参考图');
       const before = step.targetId ? snapshot.nodes.find((item) => item.id === step.targetId) : undefined;
+      const requireSelection = Boolean(input.entryId && node.metadata?.confirmImageSelection);
+      if (requireSelection && !step.targetId) fail(400, '人工选图步骤需要先连接并选择输出图片节点');
       if (step.targetId && (before?.type !== 'image' || !snapshot.connections.some((edge) => edge.fromNodeId === step.nodeId && edge.toNodeId === step.targetId))) fail(400, '替换目标必须是直接连接的输出图片');
       for (const reference of step.references) {
         const image = snapshot.nodes.find((item) => item.id === reference.nodeId);
@@ -252,7 +262,7 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
         if (upstream && image?.type === 'image' && !reference.storageKey && !image.metadata?.storageKey) continue;
         if (!image || !reference.storageKey || image.metadata?.storageKey !== reference.storageKey || !canReadFile(request.user, reference.storageKey)) fail(400, '参考图必须先保存到服务器');
       }
-      return { ...step, metadata: { ...step.metadata, model: step.model }, modelId, modelConfig, title: node.title, before, state: 'queued', outputs: [], jobs: Array.from({ length: step.count }, () => ({})) };
+      return { ...step, requireSelection, metadata: { ...step.metadata, model: step.model }, modelId, modelConfig, title: node.title, before, state: 'queued', outputs: [], jobs: Array.from({ length: step.count }, () => ({})) };
     });
     const task = { id: input.runId, canvasId: row.id, actor: request.user.id, title: row.title, entryId: input.entryId, plan, snapshot, steps, state: 'queued', createdAt: now(), updatedAt: now() };
     db.prepare('INSERT INTO canvas_tasks VALUES(?,?,?,?)').run(task.id, row.id, task.actor, JSON.stringify(task));
@@ -282,8 +292,44 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
     reply.raw.on('close', cleanup);
     events.on(request.params.id, update); update();
   });
+  app.post('/api/tasks/:taskId/select/:nodeId', async (request) => {
+    const { imageId } = z.object({ imageId: id }).parse(request.body);
+    let task = owned(request);
+    // Let the worker that persisted the waiting state release its slot before resuming.
+    if (task.state === 'waiting_selection') await workers.get(task.id)?.promise;
+    task = owned(request);
+    const step = task.steps.find((item) => item.nodeId === request.params.nodeId);
+    if (step?.selectedImageId === imageId && step.state === 'success') return view(task);
+    if (task.state !== 'waiting_selection' || step?.state !== 'waiting_selection') fail(409, '该步骤当前不在等待选图，不能重复确认或更换已确认图片');
+    const image = step.outputs.find((item) => item.id === imageId);
+    if (!image) fail(400, '请选择本次生成的候选图片');
+    transaction(db, () => {
+      const { row, content, user } = check(task, { ...step, before: step.after });
+      const target = content.nodes.find((node) => node.id === step.targetId);
+      const scale = Math.min(1, target.width / image.naturalWidth, target.height / image.naturalHeight);
+      const { id: outputId, ...metadata } = image;
+      Object.assign(target, { width: image.naturalWidth * scale, height: image.naturalHeight * scale,
+        metadata: { ...target.metadata, ...metadata, primaryImageId: outputId } });
+      commit(row, content, user);
+      step.after = structuredClone(target);
+      step.selectedImageId = imageId; step.state = 'success';
+      task.state = 'queued'; task.message = '已确认图片，继续后续步骤';
+      save(task);
+    });
+    start(task.id);
+    return view(task);
+  });
   app.post('/api/tasks/:taskId/cancel', async (request) => {
     const task = owned(request);
+    if (task.state === 'waiting_selection') {
+      task.cancelRequested = true; task.state = 'canceled'; task.message = '已停止，保留候选图片，不再执行后续步骤';
+      for (const step of task.steps) {
+        if (step.state === 'waiting_selection') step.state = 'canceled';
+        else if (step.state === 'queued') step.state = 'skipped';
+      }
+      save(task);
+      return view(task);
+    }
     if (active(task)) {
       workers.get(task.id)?.controller.abort();
       task.cancelRequested = true; task.state = 'canceling'; task.message = '已请求停止，供应商任务可能仍运行并计费'; save(task);
@@ -304,7 +350,7 @@ export function registerCanvasTasks(app, { canvas, refs, canReadFile, serialize,
       return serialize(db.prepare('SELECT * FROM canvases WHERE id=?').get(task.canvasId));
     });
   });
-  app.addHook('onReady', async () => { for (const task of all()) if (active(task)) start(task.id); });
+  app.addHook('onReady', async () => { for (const task of all()) if (active(task) && task.state !== 'waiting_selection') start(task.id); });
   const close = async () => { closing = true; shutdown.abort(); for (const stream of streams) stream.end(); for (const worker of workers.values()) worker.controller.abort(); await Promise.allSettled([...workers.values()].map((worker) => worker.promise)); };
   app.addHook('preClose', close);
   return { close };

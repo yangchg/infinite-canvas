@@ -7,12 +7,12 @@ import type { prepareBackgroundImage } from "@/services/api/image";
 export type BackgroundStep = ReturnType<typeof prepareBackgroundImage> & { nodeId: string; targetId?: string };
 export type BackgroundTask = {
     id: string; canvasId: string; entryId?: string; state: string; message?: string; createdAt: string; updatedAt: string;
-    steps: { nodeId: string; targetId?: string; title: string; state: string; message?: string; canUndo: boolean; undone?: boolean;
+    steps: { nodeId: string; targetId?: string; title: string; state: string; message?: string; canUndo: boolean; undone?: boolean; selectedImageId?: string;
         outputs: { id: string; content: string; storageKey: string }[];
         notifications?: { nodeId: string; state: string; message: string }[] }[];
 };
-export const taskActive = (task: BackgroundTask) => ["queued", "running", "canceling"].includes(task.state);
-export const taskStatus = (state: string) => ({ queued: "排队中", running: "执行中", canceling: "正在停止", canceled: "已停止", success: "已完成", failed: "失败", conflict: "需要处理", skipped: "未执行" }[state] || state);
+export const taskActive = (task: BackgroundTask) => ["queued", "running", "canceling", "waiting_selection"].includes(task.state);
+export const taskStatus = (state: string) => ({ queued: "排队中", running: "执行中", waiting_selection: "等待选图", canceling: "正在停止", canceled: "已停止", success: "已完成", failed: "失败", conflict: "需要处理", skipped: "未执行" }[state] || state);
 
 export function useBackgroundTasks(projectId: string, enabled: boolean) {
     const [tasks, setTasks] = useState<BackgroundTask[]>([]);
@@ -66,5 +66,10 @@ export function useBackgroundTasks(projectId: string, enabled: boolean) {
         await workspaceApi(`/tasks/${taskId}/undo/${nodeId}`, { method: "POST" });
         await refresh();
     }, [refresh]);
-    return { tasks, error, refresh, submit, cancel, undo };
+    const confirmImage = useCallback(async (taskId: string, nodeId: string, imageId: string) => {
+        await useCanvasStore.getState().flush();
+        await workspaceApi(`/tasks/${taskId}/select/${nodeId}`, { method: "POST", body: jsonBody({ imageId }) });
+        await refresh();
+    }, [refresh]);
+    return { tasks, error, refresh, submit, cancel, undo, confirmImage };
 }
