@@ -544,3 +544,22 @@ test("public RunningHub badge follows published config nodes rather than names o
   await send(owner, "POST", "/canvases/rh-badge/publish", { revision: 3 });
   assert.equal(await badge(), false);
 });
+
+test('RunningHub tags normalize, persist, remain admin-only and remove independently', async (t) => {
+ const { send, admin, owner } = await fixture(t);
+ await send(admin, 'PUT', '/admin/runninghub/settings', { apiKey: 'tag-test-secret' });
+ const settings = { name: 'Tagged', model: '123', capability: 'image', apiFormat: 'runninghub', baseUrl: 'https://www.runninghub.cn', enabled: true, runninghub: { inputs: [], outputNodes: ['1'] }, tags: [' 抠图 ', '抠图', '', '  ', '电商'] };
+ assert.equal((await send(owner, 'PUT', '/admin/models/new', settings)).statusCode, 403);
+ const first = (await send(admin, 'PUT', '/admin/models/new', settings)).json().id;
+ const second = (await send(admin, 'PUT', '/admin/models/new', { ...settings, model: '456' })).json().id;
+ assert.ok(first); assert.ok(second);
+ const models = (await send(owner, 'GET', '/models')).json();
+ assert.deepEqual(models.find(m => m.id === first).tags, ['抠图','电商']);
+ assert.equal(JSON.stringify(models).includes('tag-test-secret'), false);
+ assert.deepEqual((await send(admin, 'GET', '/admin/models')).json().find(m => m.id === first).tags, ['抠图','电商']);
+ assert.equal((await send(admin, 'PUT', '/admin/models/' + first, { ...settings, tags: [] })).statusCode, 200);
+ const updated = (await send(owner, 'GET', '/models')).json();
+ assert.deepEqual(updated.find(m => m.id === first).tags, []);
+ assert.deepEqual(updated.find(m => m.id === second).tags, ['抠图','电商']);
+ assert.equal((await send(admin, 'PUT', '/admin/models/' + first, { ...settings, tags: [42] })).statusCode, 400);
+});

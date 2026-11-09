@@ -1,6 +1,6 @@
 import { RunningHubMappingEditor } from "./components/runninghub-mapping-editor";
 import { useEffect, useState } from "react";
-import { App, Button, Form, Input, Modal, Select, Space, Switch, Table, Upload } from "antd";
+import { App, Button, Form, Input, Modal, Select, Space, Switch, Table, Tag, Upload } from "antd";
 import { workspaceApi, jsonBody } from "@/services/api/workspace";
 import { useServerModelStore, type ServerModel } from "@/stores/use-server-model-store";
 
@@ -12,6 +12,9 @@ export function ServerModelAdmin() {
     const { message, modal } = App.useApp();
     const [models, setModels] = useState<ManagedModel[]>([]);
     const [editing, setEditing] = useState<ManagedModel | "new" | null>(null);
+    const [tagFilter, setTagFilter] = useState<string[]>([]);
+    const [untagged, setUntagged] = useState(false);
+    const tagOptions = [...new Set(models.filter(row => row.apiFormat === "runninghub").flatMap(row => row.tags || []))].sort().map(value => ({ value, label: value }));
     const [busy, setBusy] = useState(false);
     const [form] = Form.useForm();
     const [runningHubSettings, setRunningHubSettings] = useState<RunningHubSettings>({ hasKey: false });
@@ -65,8 +68,10 @@ export function ServerModelAdmin() {
             <p className="mb-3">所有 RunningHub 模型统一使用此 Key。修改后新请求立即生效，运行中的任务继续使用启动时的 Key。</p>
             <Input.Password aria-label="RunningHub 全局 API Key" autoComplete="new-password" placeholder={runningHubSettings.hasKey ? "已配置；输入新 Key 替换" : "请输入 API Key"} value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
         </Modal>
-        <Table rowKey="id" dataSource={models} columns={[
+        <Space wrap><Select className="min-w-64" mode="multiple" allowClear placeholder="按 RunningHub 标签筛选（匹配任意）" options={tagOptions} value={tagFilter} onChange={setTagFilter} /><label><input type="checkbox" checked={untagged} onChange={event => setUntagged(event.target.checked)} /> 包含未标记</label></Space>
+        <Table rowKey="id" dataSource={models.filter(row => (!tagFilter.length && !untagged) || (row.apiFormat === "runninghub" && ((untagged && !row.tags?.length) || tagFilter.some(tag => row.tags?.includes(tag)))))} columns={[
             { title: "名称", dataIndex: "name" }, { title: "模型", dataIndex: "model" },
+            { title: "标签", render: (_, row) => row.apiFormat === "runninghub" ? <Space wrap>{row.tags?.length ? row.tags.map(tag => <Tag key={tag}>{tag}</Tag>) : "未标记"}</Space> : "—" },
             { title: "类型", render: (_, row) => capabilities.find((item) => item.value === row.capability)?.label },
             { title: "状态", render: (_, row) => row.enabled ? "已启用" : "已停用" },
             { title: "操作", render: (_, row) => <Space><Button onClick={() => edit(row)}>编辑</Button><Button danger onClick={() => modal.confirm({ title: "删除服务器模型？", content: "引用此模型的画布需要重新选择模型。", onOk: async () => { await workspaceApi(`/admin/models/${row.id}`, { method: "DELETE" }); await refresh(); } })}>删除</Button></Space> },
@@ -79,9 +84,8 @@ export function ServerModelAdmin() {
                 <Form.Item hidden={isRunningHub} name="apiKey" label={isComfy ? "API Key（无鉴权可留空；编辑时留空保留原值）" : editing !== "new" ? "API Key（留空保留原值）" : "API Key"} rules={[{ required: editing === "new" && !isComfy && !isRunningHub }]}><Input.Password autoComplete="new-password" /></Form.Item>
                 <Form.Item name="model" label={isRunningHub ? "RunningHub 工作流链接或 ID" : isComfy ? "工作流标识" : "模型 ID"} rules={[{ required: true }]}><Input /></Form.Item>
                 {isRunningHub && <>
-                    <p>支持零个或多个图片、文本输入。每次执行一次工作流，接收所选输出节点的全部图片；输入将上传 RunningHub，统一使用全局 Key 计费。</p>
+                    <Form.Item name="tags" label="标签"><Select mode="tags" options={tagOptions} placeholder="选择或新建标签" /></Form.Item>
                     <Space className="mb-3" wrap><Button disabled={!runningHubSettings.hasKey || busy} loading={busy} onClick={() => void readWorkflow()}>读取工作流</Button><Upload accept=".json" showUploadList={false} beforeUpload={async (file) => { await readWorkflow(file); return false; }}><Button disabled={busy}>导入 API JSON</Button></Upload></Space>
-                    <p>读取后请确认需要开放的输入与输出。内部固定参数可移除；不开放的参数保持云端原值。</p>
                     <Form.Item name="runninghub" rules={[{ validator: (_, value) => value?.inputs && value?.outputNodes?.length && value.inputs.every((item: { label: string; nodeId: string; field: string }) => item.label.trim() && item.nodeId.trim() && item.field.trim()) ? Promise.resolve() : Promise.reject(new Error("请完善输入映射并选择图片输出")) }]}>
                         <RunningHubMappingEditor workflow={workflow} />
                     </Form.Item>

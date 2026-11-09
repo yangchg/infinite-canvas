@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { workspaceApi } from "@/services/api/workspace";
 import type { AiConfig, ModelCapability, ApiCallFormat } from "./use-config-store";
 
-export type ServerModel = { id: string; name: string; model: string; capability: ModelCapability; apiFormat: ApiCallFormat | "comfyui" | "runninghub"; runninghub?: import("@/services/api/runninghub").RunningHubMapping };
+export type ServerModel = { id: string; name: string; model: string; capability: ModelCapability; apiFormat: ApiCallFormat | "comfyui" | "runninghub"; tags?: string[]; runninghub?: import("@/services/api/runninghub").RunningHubMapping };
 let pending: Promise<void> | undefined;
 export const useServerModelStore = create<{ models: ServerModel[]; loading: boolean; error: string; load: () => Promise<void> }>((set) => ({
     models: [], loading: false, error: "",

@@ -1,5 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Cpu } from "lucide-react";
+import { Select as SearchSelect } from "antd";
+import { useServerModelStore } from "@/stores/use-server-model-store";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -22,6 +24,9 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
+    const [tags, setTags] = useState<string[]>([]);
+    const [untagged, setUntagged] = useState(false);
+    const serverModels = useServerModelStore(state => state.models);
     const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model)))), [capability, config, value]);
     const current = value || "";
     const pickerPlaceholder = placeholder || t("settingsPanels.model.select");
@@ -33,6 +38,36 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
         window.addEventListener("model-picker-open", closeOtherPicker);
         return () => window.removeEventListener("model-picker-open", closeOtherPicker);
     }, [pickerId]);
+
+    const runningHubModels = serverModels.filter(item => item.apiFormat === "runninghub" && options.includes(`server-${item.id}::${item.model}`));
+    if (runningHubModels.length) {
+        const availableTags = [...new Set(runningHubModels.flatMap(item => item.tags || []))].sort();
+        const displayLabel = (model: string) => {
+            const item = runningHubModels.find(item => model === `server-${item.id}::${item.model}`);
+            return item ? `${item.name}（${item.model}）` : modelOptionLabel(config, model);
+        };
+        return <SearchSelect
+            aria-label="选择模型" showSearch optionFilterProp="searchText" allowClear={false}
+            className={cn("min-w-0", fullWidth ? "w-full" : "w-72", className)}
+            value={current || undefined} placeholder={pickerPlaceholder} open={open}
+            onOpenChange={next => { if (next) window.dispatchEvent(new CustomEvent("model-picker-open", { detail: pickerId })); setOpen(next); }}
+            onChange={onChange} labelRender={() => current ? displayLabel(current) : pickerPlaceholder}
+            onMouseDown={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}
+            options={options.flatMap(model => {
+                const item = runningHubModels.find(item => model === `server-${item.id}::${item.model}`);
+                if ((tags.length || untagged) && (!item || !((untagged && !item.tags?.length) || tags.some(tag => item.tags?.includes(tag))))) return [];
+                const label = displayLabel(model);
+                return [{ value: model, label: <span>{label}{Boolean(item?.tags?.length) && <span className="ml-2 text-xs opacity-60">{item!.tags!.join(" · ")}</span>}</span>, searchText: `${label} ${item?.tags?.join(" ") || ""}` }];
+            })}
+            popupRender={menu => <div data-canvas-no-zoom onWheel={event => event.stopPropagation()}>
+                <div className="flex flex-wrap gap-1 p-2" onMouseDown={event => { event.preventDefault(); event.stopPropagation(); }}>
+                    <button type="button" className="px-1 text-xs underline" onClick={() => { setTags([]); setUntagged(false); }}>全部模型</button>
+                    {availableTags.map(tag => <button type="button" key={tag} aria-pressed={tags.includes(tag)} className={cn("px-1 text-xs", tags.includes(tag) && "font-bold underline")} onClick={() => setTags(previous => previous.includes(tag) ? previous.filter(value => value !== tag) : [...previous, tag])}>{tag}</button>)}
+                    <button type="button" aria-pressed={untagged} className={cn("px-1 text-xs", untagged && "font-bold underline")} onClick={() => setUntagged(value => !value)}>未标记</button>
+                </div>{menu}
+            </div>}
+        />;
+    }
 
     return (
         <Select

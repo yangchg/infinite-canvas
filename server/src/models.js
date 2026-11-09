@@ -11,11 +11,12 @@ const schema = z.object({
   name: z.string().trim().min(1), model: z.string().trim().min(1),
   capability: z.enum(["image", "text", "video", "audio"]), apiFormat: z.enum(["openai", "gemini", "comfyui", "runninghub"]),
   runninghub: runningHubSchema.optional(),
+  tags: z.array(z.string()).optional().transform(tags => [...new Set((tags || []).map(tag => tag.trim()).filter(Boolean))]),
   comfy: comfySchema.optional(),
   baseUrl: z.url().refine((value) => { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; }),
   apiKey: z.string().trim().optional(), enabled: z.boolean(),
 });
-const publicModel = ({ id, name, model, capability, apiFormat, runninghub }) => ({ id, name, model, capability, apiFormat, ...(apiFormat === "runninghub" ? { runninghub } : {}) });
+const publicModel = ({ id, name, model, capability, apiFormat, runninghub, tags }) => ({ id, name, model, capability, apiFormat, ...(apiFormat === "runninghub" ? { runninghub, tags: tags || [] } : {}) });
 
 export async function registerModels(app) {
   const db = app.db;
@@ -71,6 +72,7 @@ export async function registerModels(app) {
       if (values.baseUrl.replace(/\/+$/, "") !== "https://www.runninghub.cn") fail(400, "RunningHub 地址请填写 https://www.runninghub.cn");
       if (values.enabled && !runningHubKey()) fail(400, "启用 RunningHub 前请在设置中保存全局 API Key");
     } else if (!apiKey) fail(400, "请填写 API Key");
+    if (values.apiFormat !== "runninghub") delete values.tags;
     const id = old?.id || randomUUID();
     db.prepare("INSERT INTO shared_models(id,config) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config").run(id, JSON.stringify({ ...values, apiKey }));
     return { id };
