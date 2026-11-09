@@ -322,7 +322,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 else onContextMenu(event, data.id);
             }}
         >
-            {!referenceSelectionState && (isSelected || hovered || isEditingTitle) && (
+            {!referenceSelectionState && (data.type === "image" || isSelected || hovered || isEditingTitle) && (
                 <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     {isEditingTitle ? (
                         <input
@@ -344,7 +344,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     ) : (
                         <button
                             type="button"
-                            className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0.5 text-left text-xs font-medium opacity-75 transition hover:border-current hover:opacity-100"
+                            className="flex max-w-full items-center gap-1 border-b border-dashed border-transparent px-0 py-0.5 text-left text-xs font-medium opacity-75 transition hover:border-current hover:opacity-100"
                             style={{ color: theme.node.text }}
                             title={t("canvas.node.renameHint")}
                             onDoubleClick={(event) => {
@@ -352,7 +352,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                                 setIsEditingTitle(true);
                             }}
                         >
-                            {data.title || t("canvas.node.untitled")}
+                            <span className="truncate">{data.title || (data.type === "image" ? t("canvas.node.image") : t("canvas.node.untitled"))}</span>
+                            {data.type === "image" && <span className="shrink-0 font-mono">· {data.id.slice(-6)}</span>}
                         </button>
                     )}
                 </div>

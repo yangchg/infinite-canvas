@@ -26,7 +26,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
-import { App, Button, Drawer, Modal } from "antd";
+import { App, Button, Drawer, Modal, Select } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
@@ -716,9 +716,8 @@ function InfiniteCanvasPage() {
             if (inputs.length === 1) bind(inputs[0].id);
             else if (inputs.length > 1) {
                 let selected = "";
-                modal.confirm({ title: "这条连线用于哪个输入？", content: <select aria-label="工作流输入" className="mt-3 w-full rounded border bg-transparent p-2" defaultValue="" onChange={(event) => { selected = event.target.value; }}>
-                    <option value="" disabled>请选择输入用途</option>{inputs.map((input) => <option key={input.id} value={input.id}>{input.label}</option>)}
-                </select>, onOk: () => { if (!selected) { message.warning("请选择输入用途"); return Promise.reject(new Error("未选择输入")); } bind(selected); } });
+                modal.confirm({ title: "这条连线用于哪个输入？", content: <Select aria-label="工作流输入" className="mt-3 w-full" placeholder="请选择输入用途" options={inputs.map((input) => ({ value: input.id, label: input.label }))} onChange={(value) => { selected = value; }} />,
+                    onOk: () => { if (!selected) { message.warning("请选择输入用途"); return Promise.reject(new Error("未选择输入")); } bind(selected); } });
             }
             setContextMenu(null);
         },

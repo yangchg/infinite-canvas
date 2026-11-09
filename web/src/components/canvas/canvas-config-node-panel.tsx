@@ -121,16 +121,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
 
             <div className="mb-2 flex cursor-default items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 <Segmented size="small" disabled={isRunning} value={source} options={[{ label: "本地模型", value: "local" }, { label: "服务器模型", value: "server" }]} onChange={(value) => onConfigChange(node.id, { modelSource: value as "local" | "server", model: "" })} />
-                {source === "server" && <button type="button" disabled={serverModels.loading} onClick={() => void serverModels.load()}>{serverModels.loading ? "加载中…" : "刷新清单"}</button>}
             </div>
             {source === "server" && <div className="mb-2 text-xs" style={{ color: theme.node.muted }}>{serverModels.error || (!config.models.length && !serverModels.loading ? "暂无服务器模型，请联系管理员配置" : "")}</div>}
-            <div className="mb-2 grid min-w-0 cursor-default grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
+            <div className={`mb-2 grid min-w-0 cursor-default ${isRunningHub ? "grid-cols-1" : "grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))]"} items-center gap-2`} onMouseDown={(event) => event.stopPropagation()}>
                 <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, runninghubBindings: {}, ...(isRunningHubModel(model) ? { count: 1 } : {}) })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
                     <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
-                ) : mode === "image" && isRunningHub ? (
-                    <span className="text-xs">按工作流运行 · 1 次</span>
-                ) : mode === "image" ? (
+                ) : mode === "image" && isRunningHub ? null : mode === "image" ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
                     <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-auto !min-h-10 !w-full !justify-start !rounded-lg !px-2 !py-2 !text-left [&_.truncate]:whitespace-normal [&_.truncate]:overflow-visible [&_.truncate]:text-clip [&_.truncate]:break-words [&_.truncate]:min-w-0" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
